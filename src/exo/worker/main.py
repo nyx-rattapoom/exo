@@ -17,6 +17,7 @@ from exo.shared.constants import EXO_MAX_INSTANCE_RETRIES
 from exo.shared.models.model_cards import ModelId, card_cache
 from exo.shared.types.chunks import InputImageChunk
 from exo.shared.types.commands import (
+    AddCustomModelCard,
     DeleteInstance,
     ForwarderCommand,
     ForwarderDownloadCommand,
@@ -178,6 +179,14 @@ class Worker:
                             ] = img
 
     async def _reconcile_custom_cards(self) -> None:
+        # A custom card on disk but absent from state is ambiguous: either it was
+        # deleted cluster-wide, or state has simply never seen it. State is
+        # in-memory and starts empty, so treating both cases as a deletion wipes
+        # the user's whole custom card directory on every cold start. Remember
+        # which cards state has advertised so the cases can be told apart, and
+        # adopt an unknown local card into the cluster rather than destroying it.
+        advertised: set[ModelId] = set()
+        adopting: set[ModelId] = set()
         while True:
             await anyio.sleep(1)
             target = dict(self.state.custom_model_cards)
@@ -185,10 +194,23 @@ class Worker:
                 if card_cache.get(model_id) == card:
                     continue
                 await card_cache.save(card)
+            advertised |= target.keys()
+            adopting -= target.keys()
 
             for card in await card_cache.list_all():
-                if card.model_id not in target:
+                if not card.is_custom or card.model_id in target:
+                    continue
+                if card.model_id in advertised:
                     await card_cache.pop(card.model_id)
+                elif card.model_id not in adopting:
+                    adopting.add(card.model_id)
+                    logger.info(f"adopting local custom model card {card.model_id}")
+                    await self.command_sender.send(
+                        ForwarderCommand(
+                            origin=self._system_id,
+                            command=AddCustomModelCard(model_card=card),
+                        )
+                    )
 
     async def plan_step(self):
         while True:
