@@ -66,26 +66,32 @@ impl Discovery {
                             .ipv6_ips()
                             .all(|addr| addr.is_loopback() || addr.is_unspecified())
                         {
+                            debug!(
+                                "not announcing on interface {} ({iface_idx}): no usable IPv6 address",
+                                iface.name
+                            );
                             continue;
                         }
 
-                        match sock.join_multicast_v6(&GROUP, *iface_idx) {
-                            Ok(()) => ifaces.lock().push(SocketAddrV6::new(
-                                GROUP,
-                                discovery_port,
-                                0,
-                                *iface_idx,
-                            )),
-                            Err(e) if e.kind() != io::ErrorKind::AddrInUse => {
-                                // skip AddrInUse - just means we've already joined the mv6
-                                if let Some(iface) = update.interfaces.get(&iface_idx) {
-                                    warn!(
-                                        "failed to join multicast v6 for interface {}: {e}",
-                                        iface.name
-                                    )
-                                }
+                        if let Err(e) = sock.join_multicast_v6(&GROUP, *iface_idx) {
+                            // AddrInUse just means we had already joined on this interface,
+                            // which is not a reason to leave it out of `ifaces` below.
+                            if e.kind() != io::ErrorKind::AddrInUse {
+                                warn!(
+                                    "failed to join multicast v6 for interface {}: {e}",
+                                    iface.name
+                                );
+                                continue;
                             }
-                            _ => {}
+                        }
+
+                        // A callback can re-fire for an interface we already track, so keep
+                        // this idempotent: without the membership check a re-join reported as
+                        // AddrInUse used to drop the interface from discovery permanently.
+                        let addr = SocketAddrV6::new(GROUP, discovery_port, 0, *iface_idx);
+                        let mut ifaces = ifaces.lock();
+                        if !ifaces.contains(&addr) {
+                            ifaces.push(addr);
                         }
                     }
                     for iface_idx in update.diff.removed {
