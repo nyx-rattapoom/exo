@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytemuck::{Pod, Zeroable};
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use netwatcher::WatchHandle;
 use parking_lot::Mutex;
 use tokio::{
@@ -18,6 +18,23 @@ use zenoh::config::ZenohId;
 const GROUP: Ipv6Addr = Ipv6Addr::new(0xff12, 0, 0, 0, 0, 0, 0xe0a1, 0xde89);
 const MAGIC: [u8; 3] = *b"EXO";
 
+/// Individual send failures are normal, so they stay at `debug!`. Warn only once a
+/// whole announce has been unable to leave the host this many times in a row - by then
+/// the node is undiscoverable and the operator needs to know, rather than watch a
+/// cluster silently never form.
+const EGRESS_WARN_AFTER: u64 = 5;
+/// How often to repeat the warning afterwards, in announce ticks (1/s).
+const EGRESS_WARN_EVERY: u64 = 60;
+
+#[cfg(target_os = "macos")]
+const EGRESS_HINT: &str = " On macOS this is usually the Local Network privacy control \
+    rather than a routing problem: a process is granted local-network access via the \
+    session that started it, and loses it when that session goes away. Launch exo from \
+    an app bundle, LaunchAgent or LaunchDaemon that has been granted Local Network \
+    access - not as a detached child of an ssh session.";
+#[cfg(not(target_os = "macos"))]
+const EGRESS_HINT: &str = "";
+
 pub struct Discovery {
     sock: Arc<UdpSocket>,
     ifaces: Arc<Mutex<Vec<SocketAddrV6>>>,
@@ -27,6 +44,8 @@ pub struct Discovery {
     listen_port: u16,
     zid: ZenohId,
     tick: Interval,
+    /// consecutive announces that reached no interface at all
+    dead_announces: Mutex<u64>,
     _sync: Mutex<WatchHandle>,
 }
 
@@ -119,6 +138,7 @@ impl Discovery {
             listen_port,
             zid,
             tick: interval(Duration::from_secs(1)),
+            dead_announces: Mutex::new(0),
             _sync,
         })
     }
@@ -255,18 +275,68 @@ impl Discovery {
 
         let addrs = self.ifaces.lock().clone();
         debug!("announcing Hello({nonce:?}) to {addrs:?}");
+        let attempted = addrs.len();
+        let mut sent = 0usize;
+        let mut last_err = None;
         // rev so .remove() doesn't break things
         for (i, addr) in addrs.into_iter().enumerate().rev() {
             match self.sock.send_to(&buf, addr).await {
-                Ok(bytes) => trace!("sent {bytes} to {addr}"),
+                Ok(bytes) => {
+                    sent += 1;
+                    trace!("sent {bytes} to {addr}");
+                }
                 Err(e) if e.kind() == io::ErrorKind::HostUnreachable => {
                     debug!("disabling discovery address {addr}: {e}");
                     _ = self.ifaces.lock().swap_remove(i);
+                    last_err = Some(e);
                 }
-                Err(e) => debug!("failed to reach {addr}: {e}"),
+                Err(e) => {
+                    debug!("failed to reach {addr}: {e}");
+                    last_err = Some(e);
+                }
             }
         }
+        self.track_egress(attempted, sent, last_err);
         Ok(())
+    }
+
+    /// Report on whether announces are leaving the host at all.
+    ///
+    /// Per-interface failures are expected and stay at `debug!`: a typical host has
+    /// tunnels and idle NICs that refuse multicast. But an announce that reaches *no*
+    /// interface means this node cannot be discovered by anyone, and the only visible
+    /// symptom is a cluster that never forms - so say so out loud. Both shapes of that
+    /// state are covered: every send failing, and an announce list that has been emptied
+    /// because every address was disabled above.
+    fn track_egress(&self, attempted: usize, sent: usize, last_err: Option<io::Error>) {
+        let mut dead = self.dead_announces.lock();
+        if sent > 0 {
+            if *dead >= EGRESS_WARN_AFTER {
+                info!("discovery announces are being sent again ({sent}/{attempted} interfaces)");
+            }
+            *dead = 0;
+            return;
+        }
+        *dead += 1;
+        if *dead != EGRESS_WARN_AFTER && (*dead < EGRESS_WARN_AFTER || *dead % EGRESS_WARN_EVERY != 0)
+        {
+            return;
+        }
+        if attempted == 0 {
+            warn!(
+                "discovery has no address left to announce on after {dead} attempts; peers \
+                 cannot discover this node.{EGRESS_HINT}"
+            );
+        } else {
+            let reason = last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "unknown".to_owned());
+            warn!(
+                "discovery could not send an announce on any of {attempted} interface(s) \
+                 for {dead} attempts in a row (last error: {reason}); peers cannot discover \
+                 this node.{EGRESS_HINT}"
+            );
+        }
     }
 }
 
