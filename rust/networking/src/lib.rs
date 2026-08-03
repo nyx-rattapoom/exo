@@ -51,6 +51,19 @@ pub fn cfg(identity: &str, listen_port: u16) -> Result<zenoh::Config> {
     Ok(cfg)
 }
 
+/// Route zenoh's own diagnostics somewhere visible.
+///
+/// zenoh logs through `tracing` while exo bridges `log` to Python, so without a
+/// `tracing` subscriber every zenoh message - including the reason a configured
+/// `connect/endpoints` peer could not be dialled - is dropped silently. Opt in with
+/// e.g. `EXO_ZENOH_LOG=zenoh=debug`; `RUST_LOG`, if set, still wins.
+fn init_zenoh_log() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    if let Ok(filter) = std::env::var("EXO_ZENOH_LOG") {
+        ONCE.call_once(|| zenoh::init_log_from_env_or(filter));
+    }
+}
+
 pub async fn open(
     cfg: zenoh::Config,
     namespace: &str,
@@ -58,6 +71,7 @@ pub async fn open(
     discovery_service_port: u16,
 ) -> Result<Session> {
     assert!(listen_port != 0, "must used defined listen port");
+    init_zenoh_log();
     let namespace: [u8; 8] = {
         blake3::hash(namespace.as_bytes()).as_bytes()[..8]
             .try_into()
