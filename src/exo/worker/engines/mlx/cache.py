@@ -470,6 +470,28 @@ class KVPrefixCache:
         return max_pressure
 
 
+def _reset_non_trimmable(c: ArraysCache | RotatingKVCache) -> None:
+    """Zero a non-trimmable cache entry in place.
+
+    ArraysCache is reset through ``.cache``, NOT ``.state``. mlx-lm #1632 turned
+    ``ArraysCache.state`` into a ``(cache, left_padding, lengths)`` tuple whose
+    setter unpacks exactly three values and then reads ``.size`` on each, so the
+    old ``state = [None] * len(state)`` raises
+    ``AttributeError: 'NoneType' object has no attribute 'size'`` there. On
+    mlx-lm 0.31.3 ``.state`` was literally ``self.cache``, so going through
+    ``.cache`` reproduces the previous semantics exactly.
+
+    ``RotatingKVCache.state`` is still ``(keys, values)`` and is untouched by
+    #1632, so it keeps using ``.state``.
+    """
+    if isinstance(c, ArraysCache):
+        c.cache = [None] * len(c.cache)  # type: ignore[reportUnknownMemberType]
+    else:
+        c.state = [None] * len(c.state)
+        c.offset = 0
+        c._idx = 0
+
+
 def trim_cache(
     cache: KVCacheType,
     num_tokens: int,
@@ -485,18 +507,12 @@ def trim_cache(
                 if restored is not None:
                     cache[i] = restored  # type: ignore
             elif isinstance(c, (ArraysCache, RotatingKVCache)):
-                c.state = [None] * len(c.state)
-                if isinstance(c, RotatingKVCache):
-                    c.offset = 0
-                    c._idx = 0
+                _reset_non_trimmable(c)
             else:
                 # CacheList without a snapshot — zero each inner cache's state
                 for inner in c:  # type: ignore[reportUnknownVariableType]
                     if isinstance(inner, (ArraysCache, RotatingKVCache)):
-                        inner.state = [None] * len(inner.state)
-                        if isinstance(inner, RotatingKVCache):
-                            inner.offset = 0
-                            inner._idx = 0
+                        _reset_non_trimmable(inner)
         else:
             c.trim(num_tokens)
 
