@@ -1,4 +1,4 @@
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 import mlx.core as mx
 import numpy as np
@@ -143,7 +143,11 @@ def send_mlx_kv_cache(
                 # (cache, left_padding, lengths) tuple, so iterating it would
                 # serialise the nested list plus two empty metadata arrays
                 # instead of the cached arrays -- silently, not as an error.
-                for a in c.cache:
+                entries = cast(
+                    list[mx.array | None],
+                    c.cache,  # type: ignore[reportUnknownMemberType]
+                )
+                for a in entries:
                     if a is None:
                         continue
                     with mx.stream(mx.Device(mx.cpu)):
@@ -211,7 +215,7 @@ def inject_rotating_kv_chunk(
 def inject_arrays_cache(cache: ArraysCache, blobs: list[TensorBlob]) -> None:
     # `.cache`, not `.state`: the mlx-lm #1632 setter unpacks exactly three
     # values, so assigning a list of N blobs raises ValueError.
-    cache.cache = [blob_to_mlx(b) for b in blobs]
+    cache.cache = [blob_to_mlx(b) for b in blobs]  # type: ignore[reportUnknownMemberType]
 
 
 def write_cache_to_wire(
