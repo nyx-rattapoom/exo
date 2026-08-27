@@ -139,7 +139,11 @@ def send_mlx_kv_cache(
                 tokens_sent = num_tokens
             case ArraysCache():
                 blobs: list[TensorBlob] = []
-                for a in c.state:
+                # `.cache`, not `.state`: mlx-lm #1632 made `.state` a
+                # (cache, left_padding, lengths) tuple, so iterating it would
+                # serialise the nested list plus two empty metadata arrays
+                # instead of the cached arrays -- silently, not as an error.
+                for a in c.cache:
                     if a is None:
                         continue
                     with mx.stream(mx.Device(mx.cpu)):
@@ -205,7 +209,9 @@ def inject_rotating_kv_chunk(
 
 
 def inject_arrays_cache(cache: ArraysCache, blobs: list[TensorBlob]) -> None:
-    cache.state = [blob_to_mlx(b) for b in blobs]
+    # `.cache`, not `.state`: the mlx-lm #1632 setter unpacks exactly three
+    # values, so assigning a list of N blobs raises ValueError.
+    cache.cache = [blob_to_mlx(b) for b in blobs]
 
 
 def write_cache_to_wire(
