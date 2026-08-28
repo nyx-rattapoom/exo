@@ -66,7 +66,18 @@ let
       buildSystemsOverlay = final: prev:
         lib.optionalAttrs isDarwin
           {
-            mlx = prev.mlx.overrideAttrs (old:
+            # EXPERIMENT (experiment/upstream-mlx-2026-08-29): the override below
+            # builds mlx from C++ sources and is written for the rltakashige fork,
+            # which uv2nix must fetch as a GIT source. With mlx pointed at PyPI,
+            # sourcePreference = "wheel" resolves it to a prebuilt .whl, and applying
+            # darwin-build-fixes.patch + CMAKE_ARGS to an unpacked wheel fails at
+            # patchPhase ("can't find file to patch: CMakeLists.txt"). So: only build
+            # from source when the source really is a source tree.
+            mlx =
+              if lib.hasSuffix ".whl" (prev.mlx.src.name or "") then
+                prev.mlx
+              else
+                prev.mlx.overrideAttrs (old:
               let
                 # Static dependencies included directly during compilation
                 gguf-tools = pkgs.fetchFromGitHub {
