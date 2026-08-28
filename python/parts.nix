@@ -75,7 +75,23 @@ let
             # from source when the source really is a source tree.
             mlx =
               if lib.hasSuffix ".whl" (prev.mlx.src.name or "") then
-                prev.mlx
+                # mlx 0.32.2 splits the native runtime into a separate mlx-metal
+                # wheel: `mlx` ships mlx/core.*.so (linked against
+                # @rpath/libmlx.dylib) while `mlx-metal` ships mlx/lib/libmlx.dylib,
+                # libjaccl.dylib and mlx.metallib. Upstream expects both wheels to
+                # land in ONE site-packages/mlx; nix gives each its own store path,
+                # so the rpath -- resolved relative to core.so's own store path --
+                # cannot find the dylib and `import mlx.core` dies with
+                # "Library not loaded: @rpath/libmlx.dylib".
+                # Merge mlx-metal's payload into mlx's output. Same shape as the
+                # isLinux branch below, which already does this for libmlx_source.
+                prev.mlx.overrideAttrs (old: {
+                  postInstall = (old.postInstall or "") + ''
+                    cp -R ${final."mlx-metal"}/${final.python.sitePackages}/mlx/. \
+                      "$out/${final.python.sitePackages}/mlx/"
+                    chmod -R u+w "$out/${final.python.sitePackages}/mlx"
+                  '';
+                })
               else
                 prev.mlx.overrideAttrs (old:
               let
