@@ -42,54 +42,24 @@ The consequences:
 
 ## What this branch diverges from upstream on
 
-`git log --no-merges upstream/main..internal-use` is 21 commits; the net diff touches 12 files.
-Grouped by why each exists:
+21 non-merge commits over `upstream/main`, 12 files net.
 
-- **Dependencies** (`pyproject.toml`, `uv.lock`, `python/parts.nix`) — `mlx-lm` and darwin `mlx`
-  as in the table above. Stock mlx was adopted on 2026-08-30 after measurement: on 2× M4 it
-  ties the fork mlx on decode and is +1.8 % on 32k prefill, and it fits 128k context at a
-  byte-identical peak *once mlx-lm forces the fused SDPA kernel for head_dim 192/256*
-  (that routing lives in the mlx-lm fork, not here). `python/parts.nix` only builds mlx from
-  C++ source when uv2nix resolves a source tree; for a PyPI wheel it merges the separate
-  `mlx-metal` wheel's `mlx/lib/` payload into the `mlx` output, because nix gives each wheel its
-  own store path and `core.*.so`'s `@rpath/libmlx.dylib` would otherwise never resolve.
-  ⚠️ The three commits that made this change (`4f08fcbf`, `645a9f04`, `504c672e`) still carry
-  "EXPERIMENT BRANCH ONLY — never merge to internal-use" in their messages. That was true when
-  written on 2026-08-29; the experiment succeeded and was adopted the next day. The messages
-  are stale, the code is production.
-- **Custom model cards survive a restart** (`src/exo/worker/main.py`, `2bbbdc1c`). Upstream's
-  `_reconcile_custom_cards` treats "on disk but absent from cluster state" as a deletion, and
-  state is in-memory and empty after a restart, so pristine `main` deletes every card in
-  `EXO_CUSTOM_MODEL_CARDS_DIR` about one second after startup (observed: 16 cards wiped on both
-  nodes). This branch remembers which cards state has advertised, adopts never-advertised
-  local cards into the cluster, and deletes only cards that were advertised and then removed.
-- **`ArraysCache.cache`, not `.state`** (`engines/mlx/cache.py`, `engines/mlx/disaggregated/adapter.py`,
-  `7d78c1e6` + `371cf15e`, tests in `test_cache_state_compat.py`, `d3db334b`). mlx-lm #1632 made
-  `ArraysCache.state` a `(cache, left_padding, lengths)` tuple; three exo sites used it as a
-  plain list of arrays. One raised in `trim_cache`, one raised on inject, and one *silently
-  serialised the wrong arrays* onto the disaggregated-prefill wire. `.state` is loosely typed,
-  so the strict typecheck passed with all three bugs present — the regression tests are the only
-  gate that catches this class.
-- **Truncated or unparseable tool calls keep the model's `finish_reason`**
-  (`runner/llm_inference/model_output_parsers.py`, `f609a765`). Upstream relabels both as
-  `finish_reason="error"`; the non-streaming chat-completions and Responses adapters then raise
-  inside the response generator after headers are sent, so the client gets HTTP 200 with an
-  empty body. Same shape as upstream PR #2184 for the truncation branch, extended to the
-  unparseable branch, which also no longer breaks out of the stream.
-- **Discovery diagnostics** (`rust/networking/src/discovery.rs`, `lib.rs`; `c6d816b6`,
-  `37a3138e`, `a1497c07`, 2026-08-03). A multicast re-join returning `AddrInUse` no longer
-  drops the interface from discovery for the life of the process; a node whose announces reach
-  no interface at all now warns (once after five ticks, then once a minute, with the macOS
-  local-network-permission explanation) instead of logging at `debug!` that pyo3-log never
-  forwards; and `EXO_ZENOH_LOG=<filter>` installs a tracing subscriber so zenoh's own retry
-  logs are visible. Unset, behaviour is identical to upstream.
-- **`.typings/mlx_lm/models/gated_delta.pyi`** — a leftover. It declares the *fused*
-  `gated_delta_kernel(q, k, v, a, b, A_log, dt_bias, state)` signature from the period
-  (2026-08-07 → 2026-08-29) when this branch carried its own packed GDN Metal kernel
-  (`04409021`, moved into mlx-lm in `92400d09`). The pinned mlx-lm now ships upstream's
-  unfused `(q, k, v, g, beta, state)` kernel, exo never references `gated_delta` anywhere, and
-  the typecheck is indifferent. Nothing else of the kernel work remains in this tree. This
-  stub should be reverted to upstream's; it is listed here so nobody mistakes it for intent.
+- **Dependencies** (`pyproject.toml`, `uv.lock`, `python/parts.nix`) — mlx-lm from our fork, darwin mlx
+  from PyPI (measured 2026-08-30: decode tie, 32k prefill +1.8 %, 128k fits). `parts.nix` skips the
+  source build for a wheel and merges `mlx-metal`'s dylibs into `mlx`. Commits `4f08fcbf`/`645a9f04`/
+  `504c672e` still say "EXPERIMENT ONLY — never merge"; the messages are stale, the code is production.
+- **Custom model cards survive a restart** (`worker/main.py`, `2bbbdc1c`) — upstream deletes every card
+  that empty post-restart state has not advertised; we adopt them instead.
+- **`ArraysCache.cache`, not `.state`** (`engines/mlx/cache.py`, `disaggregated/adapter.py`, `7d78c1e6`,
+  `371cf15e`, `d3db334b`) — mlx-lm #1632 made `.state` a 3-tuple; two exo sites raised, one silently sent
+  the wrong arrays. Typecheck cannot see it; `test_cache_state_compat.py` is the gate.
+- **Tool calls keep the model's `finish_reason`** (`runner/llm_inference/model_output_parsers.py`,
+  `f609a765`) — upstream relabels truncated/unparseable calls `"error"`, which becomes an empty HTTP 200.
+  Extends upstream PR #2184 to the unparseable branch.
+- **Discovery diagnostics** (`rust/networking/`, `c6d816b6`, `37a3138e`, `a1497c07`) — `AddrInUse` re-join
+  keeps the interface, "no announce left the host" warns, `EXO_ZENOH_LOG` exposes zenoh logs. Inert unset.
+- **`.typings/mlx_lm/models/gated_delta.pyi`** — stale fused-kernel signature from the packed-GDN period
+  (`04409021`/`92400d09`); exo never references it. Should be reverted to upstream's stub.
 
 ## Branches in this repository
 
