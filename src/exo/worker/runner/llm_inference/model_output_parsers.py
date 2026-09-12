@@ -455,18 +455,36 @@ def parse_tool_calls(
             logger.info(f"parsed {tool_call_text_parts=} into {parsed=}")
             in_tool_call = False
             tool_call_text_parts = []
+            is_terminal = (
+                response.finish_reason is not None or response.stats is not None
+            )
 
             if parsed is None:
+                # The model produced a complete but unparseable tool call. That is
+                # model output, not a server failure: surface it as plain text with
+                # the model's real finish_reason and keep the stream going.
+                # Relabelling it "error" here turned it into an ErrorChunk, which the
+                # non-streaming API adapters raise on after headers are sent (an
+                # empty HTTP 200), and the early `break` dropped everything after it.
                 logger.warning(f"tool call parsing failed for text {combined}")
-                yield response.model_copy(
-                    update={"text": combined, "token": 0, "finish_reason": "error"}
-                )
-                break
+                if accumulated_tool_calls and is_terminal:
+                    # Earlier calls in this turn parsed fine; the terminal
+                    # ToolCallResponse below carries finish/usage/stats.
+                    yield response.model_copy(
+                        update={
+                            "text": combined,
+                            "token": 0,
+                            "finish_reason": None,
+                            "usage": None,
+                            "stats": None,
+                        }
+                    )
+                else:
+                    yield response.model_copy(update={"text": combined, "token": 0})
+            else:
+                accumulated_tool_calls.extend(parsed)
 
-            accumulated_tool_calls.extend(parsed)
-            if accumulated_tool_calls and (
-                response.finish_reason is not None or response.stats is not None
-            ):
+            if accumulated_tool_calls and is_terminal:
                 yield ToolCallResponse(
                     tool_calls=accumulated_tool_calls,
                     usage=response.usage,
@@ -476,6 +494,12 @@ def parse_tool_calls(
             continue
 
         if response.finish_reason is not None:
+            # Generation stopped (e.g. length/stop) before the tool call's closing
+            # tag. This is a normal truncated completion, not a server failure:
+            # surface the partial tool-call text with the model's real
+            # finish_reason so clients get standard truncation semantics instead
+            # of an error chunk. Overwriting it with "error" here turned an
+            # out-of-budget tool call into an InternalServerError.
             logger.info(
                 "tool call parsing interrupted, yield partial tool call as text"
             )
@@ -483,7 +507,6 @@ def parse_tool_calls(
                 update={
                     "text": "".join(tool_call_text_parts),
                     "token": 0,
-                    "finish_reason": "error",
                 }
             )
             yield response
