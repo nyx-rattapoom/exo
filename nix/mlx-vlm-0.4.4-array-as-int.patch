@@ -1,0 +1,172 @@
+mlx-vlm 0.4.4: cast mx.array scalars to int before using them as counts.
+
+Carried from upstream Blaizzy/mlx-vlm commit 1249c7db09921714b43e056b149f9d762eec07d3
+("Fix instances of mx.arrays being used as integers which will break in the next MLX
+release", Lucas Newman, 2026-08-20; first released in mlx-vlm 0.6.16), re-diffed against the
+0.4.4 wheel so it applies at exact offsets. The upstream commit's twelfth file,
+minimax_h3/references.py, does not exist in 0.4.4. Applied by python/parts.nix in postInstall
+because wheel sources are never unpacked. Drop it when mlx-vlm is bumped to >= 0.6.16.
+
+diff a/mlx_vlm/models/aya_vision/vision.py b/mlx_vlm/models/aya_vision/vision.py
+--- a/mlx_vlm/models/aya_vision/vision.py
++++ b/mlx_vlm/models/aya_vision/vision.py
+@@ -231,7 +231,7 @@
+ 
+         for i in range(batch_size):
+             # (1, dim, height, width) -> (1, dim, target_height, target_width)
+-            height, width = spatial_shapes[i]
++            height, width = spatial_shapes[i].tolist()
+             # Then upsample width dimension
+             resized_embeddings = resize_bilinear(
+                 positional_embeddings,
+diff a/mlx_vlm/models/dots_ocr/vision.py b/mlx_vlm/models/dots_ocr/vision.py
+--- a/mlx_vlm/models/dots_ocr/vision.py
++++ b/mlx_vlm/models/dots_ocr/vision.py
+@@ -283,7 +283,7 @@
+         cu_seqlens = []
+         for i in range(grid_thw.shape[0]):
+             seq_len = grid_thw[i, 1] * grid_thw[i, 2]
+-            cu_seqlens.append(mx.repeat(seq_len, grid_thw[i, 0]))
++            cu_seqlens.append(mx.repeat(seq_len, int(grid_thw[i, 0])))
+         cu_seqlens = mx.concatenate(cu_seqlens).astype(mx.int32)
+         cu_seqlens = mx.cumsum(cu_seqlens, axis=0)
+         cu_seqlens = mx.pad(cu_seqlens, (1, 0), constant_values=0)
+diff a/mlx_vlm/models/glm4v/vision.py b/mlx_vlm/models/glm4v/vision.py
+--- a/mlx_vlm/models/glm4v/vision.py
++++ b/mlx_vlm/models/glm4v/vision.py
+@@ -106,10 +106,16 @@
+ 
+             # Calculate target dimensions for each patch
+             target_h = mx.concatenate(
+-                [mx.repeat(image_shapes[i, 1], lengths[i]) for i in range(len(lengths))]
++                [
++                    mx.repeat(image_shapes[i, 1], int(lengths[i]))
++                    for i in range(len(lengths))
++                ]
+             ).astype(mx.float32)
+             target_w = mx.concatenate(
+-                [mx.repeat(image_shapes[i, 2], lengths[i]) for i in range(len(lengths))]
++                [
++                    mx.repeat(image_shapes[i, 2], int(lengths[i]))
++                    for i in range(len(lengths))
++                ]
+             ).astype(mx.float32)
+ 
+             # Normalize coordinates to [-1, 1] range for grid_sample
+diff a/mlx_vlm/models/glm4v_moe/vision.py b/mlx_vlm/models/glm4v_moe/vision.py
+--- a/mlx_vlm/models/glm4v_moe/vision.py
++++ b/mlx_vlm/models/glm4v_moe/vision.py
+@@ -106,10 +106,16 @@
+ 
+             # Calculate target dimensions for each patch
+             target_h = mx.concatenate(
+-                [mx.repeat(image_shapes[i, 1], lengths[i]) for i in range(len(lengths))]
++                [
++                    mx.repeat(image_shapes[i, 1], int(lengths[i]))
++                    for i in range(len(lengths))
++                ]
+             ).astype(mx.float32)
+             target_w = mx.concatenate(
+-                [mx.repeat(image_shapes[i, 2], lengths[i]) for i in range(len(lengths))]
++                [
++                    mx.repeat(image_shapes[i, 2], int(lengths[i]))
++                    for i in range(len(lengths))
++                ]
+             ).astype(mx.float32)
+ 
+             # Normalize coordinates to [-1, 1] range for grid_sample
+diff a/mlx_vlm/models/lfm2_vl/lfm2_vl.py b/mlx_vlm/models/lfm2_vl/lfm2_vl.py
+--- a/mlx_vlm/models/lfm2_vl/lfm2_vl.py
++++ b/mlx_vlm/models/lfm2_vl/lfm2_vl.py
+@@ -143,7 +143,9 @@
+ 
+                 feature = feature[: img_feature_lengths[img_idx], :][None, ...]
+ 
+-                feature_org_h, feature_org_w = spatial_shapes[img_idx]
++                feature_org_h, feature_org_w = (
++                    int(dim) for dim in spatial_shapes[img_idx]
++                )
+                 feature = feature.reshape(1, feature_org_h, feature_org_w, -1)
+                 feature = self.pixel_unshuffle(feature)
+ 
+diff a/mlx_vlm/models/paddleocr_vl/vision.py b/mlx_vlm/models/paddleocr_vl/vision.py
+--- a/mlx_vlm/models/paddleocr_vl/vision.py
++++ b/mlx_vlm/models/paddleocr_vl/vision.py
+@@ -317,7 +317,7 @@
+         cu_seqlens = []
+         for i in range(batch_size):
+             seq_len = grid_thw[i, 1] * grid_thw[i, 2]
+-            cu_seqlens.append(mx.repeat(seq_len, grid_thw[i, 0]))
++            cu_seqlens.append(mx.repeat(seq_len, int(grid_thw[i, 0])))
+ 
+         # Concatenate the cu_seqlens for all items in the batch
+         cu_seqlens = mx.concatenate(cu_seqlens)
+diff a/mlx_vlm/models/qwen2_5_vl/vision.py b/mlx_vlm/models/qwen2_5_vl/vision.py
+--- a/mlx_vlm/models/qwen2_5_vl/vision.py
++++ b/mlx_vlm/models/qwen2_5_vl/vision.py
+@@ -364,7 +364,7 @@
+         cu_seqlens = []
+         for i in range(batch_size):
+             seq_len = grid_thw[i, 1] * grid_thw[i, 2]
+-            cu_seqlens.append(mx.repeat(seq_len, grid_thw[i, 0]))
++            cu_seqlens.append(mx.repeat(seq_len, int(grid_thw[i, 0])))
+ 
+         # Concatenate the cu_seqlens for all items in the batch
+         cu_seqlens = mx.concatenate(cu_seqlens)
+diff a/mlx_vlm/models/qwen2_vl/vision.py b/mlx_vlm/models/qwen2_vl/vision.py
+--- a/mlx_vlm/models/qwen2_vl/vision.py
++++ b/mlx_vlm/models/qwen2_vl/vision.py
+@@ -220,7 +220,7 @@
+         pos_ids = []
+ 
+         for t, h, w in grid_thw:
+-            h, w = int(h), int(w)  # Ensure h and w are integers
++            t, h, w = int(t), int(h), int(w)
+             hpos_ids = mx.expand_dims(mx.arange(h), 1)
+             hpos_ids = mx.repeat(hpos_ids, w, axis=1)
+             hpos_ids = hpos_ids.reshape(
+@@ -270,7 +270,7 @@
+         cu_seqlens = []
+         for i in range(batch_size):
+             seq_len = grid_thw[i, 1] * grid_thw[i, 2]
+-            cu_seqlens.append(mx.repeat(seq_len, grid_thw[i, 0]))
++            cu_seqlens.append(mx.repeat(seq_len, int(grid_thw[i, 0])))
+ 
+         # Concatenate the cu_seqlens for all items in the batch
+         cu_seqlens = mx.concatenate(cu_seqlens)
+diff a/mlx_vlm/models/qwen3_omni_moe/vision.py b/mlx_vlm/models/qwen3_omni_moe/vision.py
+--- a/mlx_vlm/models/qwen3_omni_moe/vision.py
++++ b/mlx_vlm/models/qwen3_omni_moe/vision.py
+@@ -379,7 +379,7 @@
+         cu_seqlens = []
+         for i in range(batch_size):
+             seq_len = grid_thw[i, 1] * grid_thw[i, 2]
+-            cu_seqlens.append(mx.repeat(seq_len, grid_thw[i, 0]))
++            cu_seqlens.append(mx.repeat(seq_len, int(grid_thw[i, 0])))
+ 
+         cu_seqlens = mx.concatenate(cu_seqlens)
+ 
+diff a/mlx_vlm/models/qwen3_vl/vision.py b/mlx_vlm/models/qwen3_vl/vision.py
+--- a/mlx_vlm/models/qwen3_vl/vision.py
++++ b/mlx_vlm/models/qwen3_vl/vision.py
+@@ -393,7 +393,7 @@
+         cu_seqlens = []
+         for i in range(batch_size):
+             seq_len = grid_thw[i, 1] * grid_thw[i, 2]
+-            cu_seqlens.append(mx.repeat(seq_len, grid_thw[i, 0]))
++            cu_seqlens.append(mx.repeat(seq_len, int(grid_thw[i, 0])))
+ 
+         # Concatenate the cu_seqlens for all items in the batch
+         cu_seqlens = mx.concatenate(cu_seqlens)
+diff a/mlx_vlm/models/qwen3_vl_moe/vision.py b/mlx_vlm/models/qwen3_vl_moe/vision.py
+--- a/mlx_vlm/models/qwen3_vl_moe/vision.py
++++ b/mlx_vlm/models/qwen3_vl_moe/vision.py
+@@ -394,7 +394,7 @@
+         cu_seqlens = []
+         for i in range(batch_size):
+             seq_len = grid_thw[i, 1] * grid_thw[i, 2]
+-            cu_seqlens.append(mx.repeat(seq_len, grid_thw[i, 0]))
++            cu_seqlens.append(mx.repeat(seq_len, int(grid_thw[i, 0])))
+ 
+         # Concatenate the cu_seqlens for all items in the batch
+         cu_seqlens = mx.concatenate(cu_seqlens)

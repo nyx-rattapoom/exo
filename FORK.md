@@ -42,7 +42,7 @@ The consequences:
 
 ## What this branch diverges from upstream on
 
-21 non-merge commits over `upstream/main`, 12 files net.
+25 non-merge commits over `upstream/main`, 14 files net (as of 2026-09-30).
 
 - **Dependencies** (`pyproject.toml`, `uv.lock`, `python/parts.nix`) — mlx-lm from our fork, darwin mlx
   from PyPI (measured 2026-08-30: decode tie, 32k prefill +1.8 %, 128k fits). `parts.nix` skips the
@@ -56,6 +56,15 @@ The consequences:
 - **Tool calls keep the model's `finish_reason`** (`runner/llm_inference/model_output_parsers.py`,
   `f609a765`) — upstream relabels truncated/unparseable calls `"error"`, which becomes an empty HTTP 200.
   Extends upstream PR #2184 to the unparseable branch.
+- **mlx-vlm 0.4.4 vision towers patched in nix** (`nix/mlx-vlm-0.4.4-array-as-int.patch`, applied by
+  `python/parts.nix` in `postInstall`) — 0.4.4 passes an `mx.array` as `repeats` to `mx.repeat`; the
+  rltakashige mlx fork accepted that, stock mlx 0.32.2 raises `TypeError`, and `batch_generate.submit`
+  catches it and silently serves the request text-only (HTTP 200, `prompt_tokens` without image tokens,
+  a hallucinated description). So vision was broken from the 2026-08-30 stock-mlx move until 2026-09-30.
+  The patch is upstream `Blaizzy/mlx-vlm@1249c7db` (first in 0.6.16, which also pulls in mlx-audio,
+  llguidance and a transformers floor bump) re-diffed against 0.4.4. `patches` is inert for a wheel
+  source (never unpacked), hence postInstall + `compileall`. Drop it when mlx-vlm is bumped ≥ 0.6.16.
+  Note `uv sync` checkout venvs do **not** get it; only the nix closure does.
 - **Discovery diagnostics** (`rust/networking/`, `c6d816b6`, `37a3138e`, `a1497c07`) — `AddrInUse` re-join
   keeps the interface, "no announce left the host" warns, `EXO_ZENOH_LOG` exposes zenoh logs. Inert unset.
 - **`.typings/mlx_lm/models/gated_delta.pyi`** — stale fused-kernel signature from the packed-GDN period
@@ -101,13 +110,13 @@ real pass/fail (`0 errors` expected); `$?` after `nix build … | tail` is `tail
 
 ## Deployed state
 
-Stamped 2026-09-12. This section goes stale first; the cluster's operator notes are the
+Stamped 2026-09-30. This section goes stale first; the cluster's operator notes are the
 source of truth for anything operational.
 
 | | |
 |---|---|
-| Running closure | `/nix/store/akp9idwgdhjalr9qdz9i6pn791v5wsvl-exo` (venv `4vsjmpm0r8c26gziag6gi0zay1xwmzvi-exo-venv`), built from `f609a765` independently on both nodes to the same store path |
-| One-step rollback | `~/exo-prev` → `/nix/store/b3im3sylf477kvchxg508bx47h2icdlv-exo` (the 2026-08-30 build: same dependencies, without `f609a765`) |
+| Running closure | `/nix/store/ygz9his1v5160fqyk5ivs6xjajzijsg7-exo` (venv `7iqz9n54q2dx4pk8glbmmbyv5lxhv792-exo-venv`), built from the mlx-vlm vision patch commit independently on both nodes to the same store path |
+| One-step rollback | `~/exo-prev` → `/nix/store/mg4j7w9685l21fwdcmxfbhp5aid4mi0p-exo` (the 2026-09-15 build, `43df3b0c`: same dependencies, without the mlx-vlm patch — vision silently text-only) |
 | Deploy step | re-point the `~/exo-current` GC root and restart the `exo` tmux session on both nodes; the supervisor resolves the binary through that symlink |
 
 ## Installing / building

@@ -64,7 +64,26 @@ let
         };
       };
       buildSystemsOverlay = final: prev:
-        lib.optionalAttrs isDarwin
+        {
+          # mlx-vlm 0.4.4 passes an mx.array as `repeats` to mx.repeat in its
+          # vision towers (qwen3_vl/vision.py:396 and six siblings). The
+          # rltakashige mlx fork's binding accepted that; stock PyPI mlx 0.32.2
+          # raises TypeError, exo's batch_generate catches it and silently serves
+          # the request text-only. Upstream fixed it in Blaizzy/mlx-vlm@1249c7db
+          # (first released in 0.6.16, which also pulls in mlx-audio, llguidance
+          # and a transformers floor bump), so carry that commit as a patch.
+          # Wheel sources are never unpacked (pyproject-wheel-dist-hook sets
+          # dontUnpack), so `patches` would be inert: patch the installed tree in
+          # postInstall and recompile the bytecode uv wrote for the old sources.
+          mlx-vlm = prev.mlx-vlm.overrideAttrs (old: {
+            postInstall = (old.postInstall or "") + ''
+              patch -p1 --no-backup-if-mismatch -d "$out/${final.python.sitePackages}" \
+                < ${../nix/mlx-vlm-0.4.4-array-as-int.patch}
+              ${final.python.interpreter} -m compileall -q -f \
+                "$out/${final.python.sitePackages}/mlx_vlm/models"
+            '';
+          });
+        } // lib.optionalAttrs isDarwin
           {
             # EXPERIMENT (experiment/upstream-mlx-2026-08-29): the override below
             # builds mlx from C++ sources and is written for the rltakashige fork,
