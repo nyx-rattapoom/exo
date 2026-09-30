@@ -11,6 +11,7 @@ run on a two-node Apple M4 cluster as a pipeline-parallel inference server. It i
 | mlx-lm | [`nyx-rattapoom/mlx-lm`](https://github.com/nyx-rattapoom/mlx-lm) **branch `internal-use`**, `uv.lock` at `b523a61bf8a253af854fa1ec11e2f423dd8c9cc4` |
 | mlx (darwin) | **stock PyPI `mlx==0.32.2`** + `mlx-metal==0.32.2` (upstream: `mlx==0.32.0` from the `rltakashige/mlx-jaccl-fix-small-recv` git fork) |
 | mlx (linux) | unchanged from upstream: `rltakashige` CUDA wheels, `mlx-cuda-1{2,3}==0.32.0` |
+| mlx-vlm | PyPI, **`>=0.7.4` on darwin** (locked 0.7.4), upstream's `>=0.3.11` elsewhere (locked 0.4.4) |
 
 Upstream exo pins `mlx-lm` at `rltakashige/mlx-lm@leo/deepseek-v4` and `mlx` at a private
 fork. This branch replaces both: `mlx-lm` with our own fork of that same base branch, kept
@@ -42,7 +43,7 @@ The consequences:
 
 ## What this branch diverges from upstream on
 
-25 non-merge commits over `upstream/main`, 14 files net (as of 2026-09-30).
+28 non-merge commits over `upstream/main`, 13 files net (as of 2026-09-30, after the mlx-vlm bump).
 
 - **Dependencies** (`pyproject.toml`, `uv.lock`, `python/parts.nix`) — mlx-lm from our fork, darwin mlx
   from PyPI (measured 2026-08-30: decode tie, 32k prefill +1.8 %, 128k fits). `parts.nix` skips the
@@ -56,15 +57,18 @@ The consequences:
 - **Tool calls keep the model's `finish_reason`** (`runner/llm_inference/model_output_parsers.py`,
   `f609a765`) — upstream relabels truncated/unparseable calls `"error"`, which becomes an empty HTTP 200.
   Extends upstream PR #2184 to the unparseable branch.
-- **mlx-vlm 0.4.4 vision towers patched in nix** (`nix/mlx-vlm-0.4.4-array-as-int.patch`, applied by
-  `python/parts.nix` in `postInstall`) — 0.4.4 passes an `mx.array` as `repeats` to `mx.repeat`; the
-  rltakashige mlx fork accepted that, stock mlx 0.32.2 raises `TypeError`, and `batch_generate.submit`
-  catches it and silently serves the request text-only (HTTP 200, `prompt_tokens` without image tokens,
-  a hallucinated description). So vision was broken from the 2026-08-30 stock-mlx move until 2026-09-30.
-  The patch is upstream `Blaizzy/mlx-vlm@1249c7db` (first in 0.6.16, which also pulls in mlx-audio,
-  llguidance and a transformers floor bump) re-diffed against 0.4.4. `patches` is inert for a wheel
-  source (never unpacked), hence postInstall + `compileall`. Drop it when mlx-vlm is bumped ≥ 0.6.16.
-  Note `uv sync` checkout venvs do **not** get it; only the nix closure does.
+- **mlx-vlm ≥ 0.7.4 on darwin** (`pyproject.toml`, `uv.lock`; upstream locks 0.4.4) — 0.4.4's vision
+  towers pass an `mx.array` as `repeats` to `mx.repeat`; the rltakashige mlx fork accepted that, stock
+  mlx 0.32.2 raises `TypeError`, and `batch_generate.submit` catches it and silently serves the request
+  text-only (HTTP 200, `prompt_tokens` without image tokens, a hallucinated description). Vision was
+  therefore broken from the 2026-08-30 stock-mlx move until 2026-09-30, first fixed by a nix patch of the
+  0.4.4 wheel (`e961c4c6`, since removed) and then by this bump, which carries upstream's own fix
+  (`Blaizzy/mlx-vlm@1249c7db`). The constraint is **split by platform marker** because upstream's Linux
+  CUDA split pins `mlx` at 0.32.0 wheels and 0.7.4 needs ≥ 0.32.2; linux keeps upstream's `>=0.3.11`.
+  Darwin runtime additions: `mlx-audio`, `llguidance`, `sounddevice`, `websockets`, `scipy`, and the forced
+  `starlette` 0.50 → 1.7 / `fastapi` 0.128 → 0.142 bump under exo's own API server; `datasets`/`pandas`/
+  `pyarrow` drop out. `httpx2` is in the `dev` group only so starlette 1.x's `TestClient` stays typed.
+  Measured: vision output byte-identical to the patched 0.4.4, 32k throughput and peak a tie.
 - **Discovery diagnostics** (`rust/networking/`, `c6d816b6`, `37a3138e`, `a1497c07`) — `AddrInUse` re-join
   keeps the interface, "no announce left the host" warns, `EXO_ZENOH_LOG` exposes zenoh logs. Inert unset.
 - **`.typings/mlx_lm/models/gated_delta.pyi`** — stale fused-kernel signature from the packed-GDN period
@@ -115,8 +119,8 @@ source of truth for anything operational.
 
 | | |
 |---|---|
-| Running closure | `/nix/store/ygz9his1v5160fqyk5ivs6xjajzijsg7-exo` (venv `7iqz9n54q2dx4pk8glbmmbyv5lxhv792-exo-venv`), built from the mlx-vlm vision patch commit independently on both nodes to the same store path |
-| One-step rollback | `~/exo-prev` → `/nix/store/mg4j7w9685l21fwdcmxfbhp5aid4mi0p-exo` (the 2026-09-15 build, `43df3b0c`: same dependencies, without the mlx-vlm patch — vision silently text-only) |
+| Running closure | built from the `internal-use` head that carries this stamp (the mlx-vlm 0.7.4 bump), independently on both nodes to the same store path. The store path itself lives in the operator notes, not here: this file is flake source, so naming the hash here would change it |
+| One-step rollback | `~/exo-prev` → the 2026-09-30 morning build from `e961c4c6` (mlx-vlm 0.4.4 + nix patch; vision works there too). `~/exo-archive-*` roots hold the older builds, all with vision silently text-only |
 | Deploy step | re-point the `~/exo-current` GC root and restart the `exo` tmux session on both nodes; the supervisor resolves the binary through that symlink |
 
 ## Installing / building
