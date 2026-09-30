@@ -36,6 +36,7 @@ exo = "exo.main:main"
 [dependency-groups]
 dev = [
   "basedpyright>=1.29.0",
+  "httpx2>=2.13.1",
   "pyinstaller>=6.17.0",
   "playwright>=1.52.0",
   "pytest>=8.4.0",
