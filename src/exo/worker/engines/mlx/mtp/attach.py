@@ -34,6 +34,18 @@ def _text_args(model_path: Path) -> TextModelArgs:
     return TextModelArgs.from_dict(cast(dict[str, object], tc))
 
 
+def _all_ranks_ok(ok: bool, group: mx.distributed.Group | None) -> bool:
+    if group is None:
+        return ok
+    total = mx.distributed.all_sum(
+        mx.array(1 if ok else 0, dtype=mx.int32),
+        group=group,
+        stream=mx.default_stream(mx.Device(mx.cpu)),
+    )
+    mx.eval(total)
+    return int(total.item()) == group.size()
+
+
 def maybe_attach_mtp(
     model: nn.Module,
     model_path: Path,
@@ -60,8 +72,14 @@ def maybe_attach_mtp(
     head = None
     if is_last_rank:
         head = load_head(model_path, _text_args(model_path), MTP_HEAD_FILE)
-        if head is None:
-            return False
+    # Every rank must take the same decode path, so agree on whether the head
+    # loaded before anyone attaches a runtime.
+    if not _all_ranks_ok(head is not None or not is_last_rank, group):
+        if head is not None or is_last_rank:
+            logger.warning("MTP head unavailable on the drafting rank; MTP disabled")
+        else:
+            logger.warning("MTP head unavailable on another rank; MTP disabled")
+        return False
 
     layers = cast(list[nn.Module], model.layers)
     gdn = install_gdn_capture(layers)
