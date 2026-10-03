@@ -69,6 +69,16 @@ The consequences:
   `starlette` 0.50 → 1.7 / `fastapi` 0.128 → 0.142 bump under exo's own API server; `datasets`/`pandas`/
   `pyarrow` drop out. `httpx2` is in the `dev` group only so starlette 1.x's `TestClient` stays typed.
   Measured: vision output byte-identical to the patched 0.4.4, 32k throughput and peak a tie.
+- **Native MTP speculative decoding** (`engines/mlx/mtp/`, `generator/generate.py`, `utils_mlx.py`,
+  `builder.py`) — opt-in with `EXO_MTP_DRAFT=K` (default 0 = inert, byte-identical behaviour). Loads the
+  checkpoint's Qwen3.5/3.6 MTP head from an `mtp*.safetensors` sidecar on the LAST pipeline rank, primes
+  it from the trunk's final-norm output during prefill, drafts K tokens per round (broadcast by
+  `all_sum`), verifies them in one multi-token trunk forward through the normal pipeline wrappers, and
+  rolls GatedDeltaNet conv/SSM state back exactly by re-running the kernel over the accepted prefix
+  (`gdn_rollback.py`). Forces `SequentialGenerator` (batch size 1). Tokens are sampled from the trunk's
+  own logits, so the output distribution is unchanged. Gated by `test_mtp_head.py` /
+  `test_mtp_gdn_rollback.py`. Head: TensorFold's naive 4-bit g64 sidecar measured 0.883 K=1 acceptance
+  vs 0.886 for bf16 (2026-10-04).
 - **Discovery diagnostics** (`rust/networking/`, `c6d816b6`, `37a3138e`, `a1497c07`) — `AddrInUse` re-join
   keeps the interface, "no announce left the host" warns, `EXO_ZENOH_LOG` exposes zenoh logs. Inert unset.
 - **`.typings/mlx_lm/models/gated_delta.pyi`** — stale fused-kernel signature from the packed-GDN period
