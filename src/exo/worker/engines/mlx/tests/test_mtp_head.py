@@ -11,6 +11,7 @@ from mlx_lm.models.qwen3_5 import TextModelArgs
 from exo.worker.engines.mlx.mtp.head import (
     Qwen35MtpHead,
     build_head,
+    heal_delta_norms,
     quantize_from_weights,
     strip_mtp_prefix,
 )
@@ -121,3 +122,22 @@ def test_quantize_from_weights_ignores_bf16_modules() -> None:
         head, cast(dict[str, mx.array], dict(tree_flatten(head.parameters())))
     )
     assert specs == {}
+
+
+def test_heal_delta_norms_shifts_only_zero_centred_gains() -> None:
+    absolute_small = mx.array([0.15, 0.3, 0.5, 0.2])  # pre_fc style: small but positive
+    absolute = mx.array([0.9, 1.2, 1.8, 0.7])
+    absolute_qk = mx.array([1.7, -0.008, 2.5, 1.9])  # tiny negative entry, mean well above 1
+    delta = mx.array([-0.1, 0.2, 0.8, -0.3])  # unshifted (w - 1)
+    w = {
+        "pre_fc_norm_embedding.weight": absolute_small,
+        "layers.0.input_layernorm.weight": absolute,
+        "layers.0.self_attn.q_norm.weight": absolute_qk,
+        "layers.0.post_attention_layernorm.weight": delta,
+        "fc.weight": mx.zeros((4, 8)),
+    }
+    healed, shifted = heal_delta_norms(w)
+    assert shifted == ["layers.0.post_attention_layernorm.weight"]
+    assert mx.array_equal(healed["layers.0.post_attention_layernorm.weight"], delta + 1.0).item()
+    for k in ("pre_fc_norm_embedding.weight", "layers.0.input_layernorm.weight", "layers.0.self_attn.q_norm.weight", "fc.weight"):
+        assert healed[k] is w[k]
