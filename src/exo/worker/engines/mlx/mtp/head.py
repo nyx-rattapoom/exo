@@ -135,6 +135,44 @@ def load_sidecar(path: str | Path) -> dict[str, mx.array]:
     return out
 
 
+_NORM_SUFFIXES: tuple[str, ...] = (
+    "input_layernorm.weight",
+    "post_attention_layernorm.weight",
+    "q_norm.weight",
+    "k_norm.weight",
+    "pre_fc_norm_embedding.weight",
+    "pre_fc_norm_hidden.weight",
+)
+
+
+def heal_delta_norms(weights: dict[str, mx.array]) -> tuple[dict[str, mx.array], list[str]]:
+    """Restore the +1 convention on any RMSNorm gain still stored zero-centred.
+
+    Qwen3.5/3.6 checkpoints store RMSNorm weights as (w - 1); mlx-lm's sanitize
+    shifts the trunk's, but a sidecar head is loaded separately and converters
+    differ in what they shifted (2026-10-04: the Youssofal sidecar ships an
+    unshifted post_attention_layernorm; TensorFold's is shifted). A zero-centred
+    gain has negative entries and a mean well below 1, an absolute gain does
+    not (the pre_fc norms are legitimately small but strictly positive). A
+    mis-shifted norm costs 10+ points of acceptance with no error, so this is
+    checked per tensor and logged.
+    """
+    out = dict(weights)
+    shifted: list[str] = []
+    for k, v in weights.items():
+        if v.ndim != 1:
+            continue
+        if not (k == "norm.weight" or any(k.endswith(s) for s in _NORM_SUFFIXES)):
+            continue
+        f = v.astype(mx.float32)
+        vmin = float(mx.min(f).item())
+        vmean = float(mx.mean(f).item())
+        if vmin < 0.0 and vmean < 1.0:
+            out[k] = (f + 1.0).astype(v.dtype)
+            shifted.append(k)
+    return out, shifted
+
+
 def _module_quant_spec(
     weights: dict[str, mx.array], path: str, in_features: int
 ) -> dict[str, int] | None:
@@ -212,7 +250,12 @@ def load_head(
             f"(tried {explicit_file or SIDECAR_CANDIDATES}); MTP disabled for this runner"
         )
         return None
-    weights = load_sidecar(sidecar)
+    weights, shifted = heal_delta_norms(load_sidecar(sidecar))
+    if shifted:
+        logger.warning(
+            f"MTP sidecar {sidecar.name}: {len(shifted)} RMSNorm gain(s) were zero-centred; "
+            f"restored the +1 convention on {shifted}"
+        )
     head, specs, nbytes = build_head(args, weights)
     quant = sorted({(s["bits"], s["group_size"]) for s in specs.values()})
     logger.info(
