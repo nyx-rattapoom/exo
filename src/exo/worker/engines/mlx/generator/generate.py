@@ -56,6 +56,11 @@ from exo.worker.engines.mlx.constants import (
     MAX_TOKENS,
 )
 from exo.worker.engines.mlx.generator.remote_prefill import remote_prefill
+from exo.worker.engines.mlx.mtp.decode import (
+    get_runtime,
+    mtp_stream_generate,
+    prime_during_prefill,
+)
 from exo.worker.engines.mlx.types import KVCacheType, Model
 from exo.worker.engines.mlx.utils_mlx import (
     apply_chat_template,
@@ -645,7 +650,18 @@ def mlx_generate(
     prefill_tps = 0.0
     prefill_tokens = 0
     ssm_snapshots_list: list[CacheSnapshot] = []
-    with maybe_vision_ctx:
+    # MTP speculative decoding: only for plain text requests the local prefill
+    # handles end to end (the head is primed from the trunk's hidden states as
+    # prefill produces them).
+    mtp_rt = get_runtime(model)
+    if mtp_rt is not None and (vision is not None or use_remote):
+        mtp_rt = None
+    mtp_head_cache = (
+        mtp_rt.head.make_cache()
+        if mtp_rt is not None and mtp_rt.head is not None
+        else None
+    )
+    with maybe_vision_ctx, prime_during_prefill(mtp_rt, prompt_tokens, mtp_head_cache):
         if use_remote and task.prefill_endpoint is not None:
             try:
                 prefill_tps, prefill_tokens, ssm_snapshots_list = remote_prefill(
@@ -717,8 +733,21 @@ def mlx_generate(
     logger.info("Starting decode")
     mx_barrier(group)
 
-    for completion_tokens, out in enumerate(
-        stream_generate(
+    if mtp_rt is not None:
+        token_stream = mtp_stream_generate(
+            model=model,
+            tokenizer=tokenizer,
+            rt=mtp_rt,
+            last_tokens=last_token,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            logits_processors=logits_processors,
+            cache=caches,
+            head_cache=mtp_head_cache,
+            prompt_tokens_total=len(all_prompt_tokens),
+        )
+    else:
+        token_stream = stream_generate(
             model=model,
             tokenizer=tokenizer,
             prompt=last_token,
@@ -729,9 +758,9 @@ def mlx_generate(
             prefill_step_size=1,
             kv_group_size=KV_GROUP_SIZE,
             kv_bits=KV_BITS,
-        ),
-        start=1,
-    ):
+        )
+
+    for completion_tokens, out in enumerate(token_stream, start=1):
         generated_text_parts.append(out.text)
         accumulated_text += out.text
 

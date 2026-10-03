@@ -64,6 +64,7 @@ from exo.worker.engines.mlx.auto_parallel import (
     pipeline_auto_parallel,
     tensor_auto_parallel,
 )
+from exo.worker.engines.mlx.mtp.attach import maybe_attach_mtp
 from exo.worker.engines.mlx.types import Model
 from exo.worker.runner.bootstrap import logger
 
@@ -189,6 +190,7 @@ def load_mlx_items(
         end_time = time.perf_counter()
         logger.info(f"Time taken to load model: {(end_time - start_time):.2f}s")
         tokenizer = get_tokenizer(model_path, bound_instance.bound_shard)
+        maybe_attach_mtp(model, model_path, group=None, is_last_rank=True)
 
     else:
         logger.info("Starting distributed init")
@@ -268,6 +270,12 @@ def shard_and_load(
             logger.info(f"loading model from {model_path} with pipeline parallelism")
             model = yield from pipeline_auto_parallel(model, group, shard_metadata)
             mx.eval(model.parameters())
+            maybe_attach_mtp(
+                model,
+                model_path,
+                group=group,
+                is_last_rank=shard_metadata.device_rank == shard_metadata.world_size - 1,
+            )
         case CfgShardMetadata():
             raise ValueError(
                 "CfgShardMetadata is not supported for text model loading - "
