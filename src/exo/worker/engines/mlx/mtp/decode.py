@@ -241,7 +241,6 @@ def _draft(
         # from trunk hiddens after verification
         head_cache.trim(k - 1)
     ids = mx.concatenate(drafts, axis=1)[0]
-    mx.eval(ids)
     return cast(list[int], ids.tolist())
 
 
@@ -265,18 +264,12 @@ def mtp_stream_generate(
         raise ValueError("mtp_stream_generate expects the last two prompt tokens")
     if rt.is_drafting_rank and head_cache is None:
         raise ValueError("drafting rank needs a head cache")
-    k = rt.draft_tokens
     eos_ids = set(cast(set[int], tokenizer.eos_token_ids))
     detokenizer: StreamingDetokenizer = tokenizer.detokenizer
     detokenizer.reset()  # pyright: ignore[reportUnknownMemberType]
     kv_caches = [c for c in cache if isinstance(c, KVCache)]
     stats = MtpStats()
     last_hidden = _LastHidden()
-
-    def trunk(inputs: list[int]) -> tuple[mx.array, mx.array]:
-        logits: mx.array = model(mx.array(inputs)[None], cache=cache)
-        hidden = last_hidden.take()
-        return logits, hidden
 
     def response(token: int, logprobs: mx.array, n: int, tic: float, finish: str | None) -> GenerationResponse:
         return GenerationResponse(
@@ -295,6 +288,42 @@ def mtp_stream_generate(
     tap: contextlib.AbstractContextManager[object] = (
         HiddenTap(rt.inner, last_hidden) if rt.is_drafting_rank else contextlib.nullcontext()
     )
+    try:
+        yield from _mtp_rounds(
+            model, rt, tap, last_tokens, max_tokens, sampler, logits_processors,
+            cache, head_cache, kv_caches, eos_ids, detokenizer, last_hidden, stats, response,
+        )
+    finally:
+        # mlx_generate breaks out of the stream on the final token, so the
+        # generator is closed rather than exhausted; log either way.
+        rt.gdn.clear()
+        logger.info(stats.summary())
+
+
+def _mtp_rounds(
+    model: Model,
+    rt: MtpRuntime,
+    tap: contextlib.AbstractContextManager[object],
+    last_tokens: mx.array,
+    max_tokens: int,
+    sampler: Sampler,
+    logits_processors: list[LogitsProcessor],
+    cache: KVCacheType,
+    head_cache: KVCache | None,
+    kv_caches: list[KVCache],
+    eos_ids: set[int],
+    detokenizer: StreamingDetokenizer,
+    last_hidden: _LastHidden,
+    stats: MtpStats,
+    response: Callable[[int, mx.array, int, float, str | None], GenerationResponse],
+) -> Generator[GenerationResponse, None, None]:
+    k = rt.draft_tokens
+
+    def trunk(inputs: list[int]) -> tuple[mx.array, mx.array]:
+        logits: mx.array = model(mx.array(inputs)[None], cache=cache)
+        hidden = last_hidden.take()
+        return logits, hidden
+
     with tap, wired_limit(model, [generation_stream]), mx.stream(generation_stream):
         t0 = int(last_tokens[0].item())
         t1 = int(last_tokens[1].item())
@@ -329,19 +358,24 @@ def mtp_stream_generate(
             logits_all: mx.array = model(mx.array(inputs)[None], cache=cache)
             rt.gdn.disarm()
             hidden_all = last_hidden.take() if rt.is_drafting_rank else None
-            mx.eval(logits_all)
-            committed: list[tuple[int, mx.array]] = []
-            n_acc = 0
+            # Process every position's logits with its own history, then sample
+            # all K+1 positions in ONE sampler call: a single host sync per round.
+            rows: list[mx.array] = []
             for j in range(k + 1):
                 logits = logits_all[:, j, :]
                 if logits_processors:
                     history = mx.array(fed + inputs[: j + 1])
                     for proc in logits_processors:
                         logits = proc(history, logits)
-                logprobs = logits - mx.logsumexp(logits, keepdims=True)
-                y = int(sampler(logprobs).item())
-                committed.append((y, logprobs.squeeze(0)))
-                if j < k and y == drafts[j]:
+                rows.append(logits)
+            logits_rows = mx.concatenate(rows, axis=0)  # [K+1, V]
+            logprobs_rows = logits_rows - mx.logsumexp(logits_rows, axis=-1, keepdims=True)
+            ys = cast(list[int], sampler(logprobs_rows).tolist())
+            committed: list[tuple[int, mx.array]] = []
+            n_acc = 0
+            for j in range(k + 1):
+                committed.append((ys[j], logprobs_rows[j]))
+                if j < k and ys[j] == drafts[j]:
                     n_acc += 1
                     continue
                 break
@@ -371,20 +405,18 @@ def mtp_stream_generate(
             # ---- 4. emit --------------------------------------------------
             for token, logprobs in committed:
                 if token in eos_ids:
-                    detokenizer.finalize()  # pyright: ignore[reportUnknownMemberType]
+                    detokenizer.finalize()
                     yield response(token, logprobs, n_emitted + 1, tic, "stop")
                     finished = True
                     break
-                detokenizer.add_token(token)  # pyright: ignore[reportUnknownMemberType]
+                detokenizer.add_token(token)
                 n_emitted += 1
                 stats.emitted += 1
                 if n_emitted >= max_tokens:
-                    detokenizer.finalize()  # pyright: ignore[reportUnknownMemberType]
+                    detokenizer.finalize()
                     yield response(token, logprobs, n_emitted, tic, "length")
                     finished = True
                     break
                 yield response(token, logprobs, n_emitted, tic, None)
             if MTP_LOG_EVERY and stats.rounds % MTP_LOG_EVERY == 0:
                 logger.info(stats.summary())
-
-    logger.info(stats.summary())
