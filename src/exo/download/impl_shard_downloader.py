@@ -92,6 +92,32 @@ class SingletonShardDownloader(ShardDownloader):
         return await self.shard_downloader.get_shard_download_status_for_shard(shard)
 
 
+def weights_shard(shard: ShardMetadata) -> ShardMetadata:
+    """The shard whose files are actually fetched/scanned on disk.
+
+    A card with ``weights_repo`` set serves another card's directory, so every
+    download/status operation runs against that repo id while progress is
+    reported under the alias card's own id (see ``reported_progress``).
+    """
+    card = shard.model_card
+    target = card.weights_model_id()
+    if target == card.model_id:
+        return shard
+    aliased_card = card.model_copy(
+        update={"model_id": target, "weights_repo": "", "mtp": None}
+    )
+    return shard.model_copy(update={"model_card": aliased_card})
+
+
+def reported_progress(
+    shard: ShardMetadata, progress: RepoDownloadProgress
+) -> RepoDownloadProgress:
+    """Re-key a progress record from the weights shard to the alias shard."""
+    if progress.shard is shard:
+        return progress
+    return progress.model_copy(update={"shard": shard})
+
+
 class ResumableShardDownloader(ShardDownloader):
     def __init__(self, max_parallel_downloads: int = 8, offline: bool = False):
         self.max_parallel_downloads = max_parallel_downloads
@@ -116,23 +142,25 @@ class ResumableShardDownloader(ShardDownloader):
         self, shard: ShardMetadata, config_only: bool = False
     ) -> Path:
         allow_patterns = ["config.json"] if config_only else None
+        dl_shard = weights_shard(shard)
 
         has_vision_sibling = (
             not config_only
             and not self.offline
-            and shard.model_card.vision is not None
-            and shard.model_card.vision.weights_repo != str(shard.model_card.model_id)
+            and dl_shard.model_card.vision is not None
+            and dl_shard.model_card.vision.weights_repo
+            != str(dl_shard.model_card.model_id)
         )
 
         async def main_progress(
-            cb_shard: ShardMetadata, progress: RepoDownloadProgress
+            _cb_shard: ShardMetadata, progress: RepoDownloadProgress
         ) -> None:
             if has_vision_sibling and progress.status == "complete":
                 return
-            await self.on_progress_wrapper(cb_shard, progress)
+            await self.on_progress_wrapper(shard, reported_progress(shard, progress))
 
         target_dir, _ = await download_shard(
-            shard,
+            dl_shard,
             main_progress,
             max_parallel_downloads=self.max_parallel_downloads,
             allow_patterns=allow_patterns,
@@ -140,12 +168,12 @@ class ResumableShardDownloader(ShardDownloader):
         )
 
         if has_vision_sibling:
-            vision_shard = self._build_vision_shard(shard)
+            vision_shard = self._build_vision_shard(dl_shard)
 
             async def vision_progress(
                 _cb_shard: ShardMetadata, progress: RepoDownloadProgress
             ) -> None:
-                await self.on_progress_wrapper(shard, progress)
+                await self.on_progress_wrapper(shard, reported_progress(shard, progress))
 
             await download_shard(
                 vision_shard,
@@ -165,21 +193,24 @@ class ResumableShardDownloader(ShardDownloader):
         ) -> None:
             return
 
+        dl_shard = weights_shard(shard)
         path, main_progress = await download_shard(
-            shard,
+            dl_shard,
             _noop,
             skip_download=True,
             skip_internet=self.offline,
         )
+        main_progress = reported_progress(shard, main_progress)
 
         has_vision_sibling = (
-            shard.model_card.vision is not None
-            and shard.model_card.vision.weights_repo != str(shard.model_card.model_id)
+            dl_shard.model_card.vision is not None
+            and dl_shard.model_card.vision.weights_repo
+            != str(dl_shard.model_card.model_id)
         )
         if not has_vision_sibling:
             return path, main_progress
 
-        vision_shard = self._build_vision_shard(shard)
+        vision_shard = self._build_vision_shard(dl_shard)
         _, vision_progress = await download_shard(
             vision_shard,
             _noop,

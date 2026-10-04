@@ -10,7 +10,8 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.qwen3_5 import Qwen3_5TextModel, TextModel, TextModelArgs
 
-from exo.worker.engines.mlx.mtp.config import MTP_DRAFT_TOKENS, MTP_HEAD_FILE, mtp_enabled
+from exo.shared.models.model_cards import MtpCardConfig
+from exo.worker.engines.mlx.mtp.config import resolve_mtp_settings
 from exo.worker.engines.mlx.mtp.decode import MtpRuntime, attach_runtime
 from exo.worker.engines.mlx.mtp.gdn_rollback import install_gdn_capture
 from exo.worker.engines.mlx.mtp.head import load_head
@@ -51,27 +52,33 @@ def maybe_attach_mtp(
     model_path: Path,
     group: mx.distributed.Group | None,
     is_last_rank: bool,
+    card_mtp: MtpCardConfig | None = None,
 ) -> bool:
-    """Wire MTP into ``model`` when ``EXO_MTP_DRAFT`` > 0 and the model is a
-    Qwen3.5/3.6 text model with an MTP sidecar. Returns True when attached.
+    """Wire MTP into ``model`` when this instance's card enables it (or
+    ``EXO_MTP_DRAFT`` > 0 overrides) and the model is a Qwen3.5/3.6 text model
+    with an MTP sidecar. Returns True when attached.
 
     The head is loaded on the last pipeline rank only (every rank already sees
     the final hidden through the pipeline all_gather; the drafts are broadcast).
     """
-    if not mtp_enabled():
+    draft_tokens, head_file = resolve_mtp_settings(
+        card_mtp.draft_tokens if card_mtp is not None else None,
+        card_mtp.head_file if card_mtp is not None else None,
+    )
+    if draft_tokens <= 0:
         return False
     text_model = _text_model(model)
     inner = get_inner_model(model)
     if text_model is None or not isinstance(inner, Qwen3_5TextModel):
         logger.warning(
-            f"EXO_MTP_DRAFT={MTP_DRAFT_TOKENS} but {type(model).__name__} is not a "
-            "Qwen3.5/3.6 text model; MTP disabled for this runner"
+            f"MTP requested (draft_tokens={draft_tokens}) but {type(model).__name__} "
+            "is not a Qwen3.5/3.6 text model; MTP disabled for this runner"
         )
         return False
 
     head = None
     if is_last_rank:
-        head = load_head(model_path, _text_args(model_path), MTP_HEAD_FILE)
+        head = load_head(model_path, _text_args(model_path), head_file)
     # Every rank must take the same decode path, so agree on whether the head
     # loaded before anyone attaches a runtime.
     if not _all_ranks_ok(head is not None or not is_last_rank, group):
@@ -86,7 +93,7 @@ def maybe_attach_mtp(
     lm_head = text_model.lm_head
 
     rt = MtpRuntime(
-        draft_tokens=MTP_DRAFT_TOKENS,
+        draft_tokens=draft_tokens,
         inner=inner,
         lm_head=lm_head,
         gdn=gdn,
@@ -96,7 +103,7 @@ def maybe_attach_mtp(
     )
     attach_runtime(model, rt)
     logger.info(
-        f"MTP config: {{'draft_tokens': {MTP_DRAFT_TOKENS}, 'drafting_rank': {is_last_rank}, "
+        f"MTP config: {{'draft_tokens': {draft_tokens}, 'drafting_rank': {is_last_rank}, "
         f"'gdn_layers': {len(gdn.layers)}, 'head_loaded': {head is not None}}}"
     )
     return True
