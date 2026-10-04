@@ -111,8 +111,11 @@ def load_sidecar(path: str | Path) -> dict[str, mx.array]:
     raw = cast(dict[str, mx.array], mx.load(str(path)))
     out: dict[str, mx.array] = {}
     experts: dict[tuple[str, str, str], dict[int, mx.array]] = {}
+    # Head-only repos (e.g. mlx-community/Qwen3.6-35B-A3B-MTP-4bit) store the head's
+    # local tree without any `mtp.` prefix; full-model sidecars prefix every key.
+    unprefixed = not any("mtp." in k for k in raw)
     for k, v in raw.items():
-        local = strip_mtp_prefix(k)
+        local = k if unprefixed else strip_mtp_prefix(k)
         if local is None:
             continue
         m = _EXPERT_RE.match(local)
