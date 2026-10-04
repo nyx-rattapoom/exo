@@ -16,7 +16,8 @@ from the stored ``weight``/``scales`` shapes (``quantize_from_weights``).
 
 Measured 2026-10-04 (single process, 16 trajectories x 256 tokens, K=1 argmax
 match): TensorFold's naive affine-4bit g64 head 0.883 greedy / 0.877 under exo's
-default sampler, bf16 head 0.886 / 0.878 - so the small head loses nothing.
+default sampler, bf16 head 0.886 / 0.878, mlx-community 4/5-bit 0.884 / 0.889,
+Youssofal INT4 0.884 - all the same official head; the small heads lose nothing.
 """
 
 from __future__ import annotations
@@ -169,11 +170,23 @@ def heal_delta_norms(weights: dict[str, mx.array]) -> tuple[dict[str, mx.array],
             continue
         f = v.astype(mx.float32)
         vmin = float(mx.min(f).item())
-        vmean = float(mx.mean(f).item())
-        if vmin < 0.0 and vmean < 1.0:
+        # Absolute gains are strictly positive apart from a -0.008 entry in the
+        # official q_norm; zero-centred ones have entries at -0.14 and below, and
+        # their mean is NOT a reliable tell (the official final norm is 1.93
+        # zero-centred vs 2.93 absolute; Noctalin ships it that way).
+        if vmin < -0.05:
             out[k] = (f + 1.0).astype(v.dtype)
             shifted.append(k)
     return out, shifted
+
+
+def cast_floats(weights: dict[str, mx.array], dtype: mx.Dtype = mx.bfloat16) -> dict[str, mx.array]:
+    """Bring float16 sidecars (e.g. Noctalin's oQ4-fp16) to the trunk's bf16 so
+    quantised matmuls see matching scale/activation dtypes."""
+    return {
+        k: (v.astype(dtype) if v.dtype in (mx.float16, mx.float32) else v)
+        for k, v in weights.items()
+    }
 
 
 def _module_quant_spec(
@@ -253,7 +266,7 @@ def load_head(
             f"(tried {explicit_file or SIDECAR_CANDIDATES}); MTP disabled for this runner"
         )
         return None
-    weights, shifted = heal_delta_norms(load_sidecar(sidecar))
+    weights, shifted = heal_delta_norms(cast_floats(load_sidecar(sidecar)))
     if shifted:
         logger.warning(
             f"MTP sidecar {sidecar.name}: {len(shifted)} RMSNorm gain(s) were zero-centred; "
