@@ -1,5 +1,6 @@
 """MTP head: sidecar key normalisation, per-module quantisation inference, strict load."""
 
+from pathlib import Path
 from typing import cast
 
 import mlx.core as mx
@@ -12,6 +13,7 @@ from exo.worker.engines.mlx.mtp.head import (
     Qwen35MtpHead,
     build_head,
     heal_delta_norms,
+    load_sidecar,
     quantize_from_weights,
     strip_mtp_prefix,
 )
@@ -141,3 +143,19 @@ def test_heal_delta_norms_shifts_only_zero_centred_gains() -> None:
     assert mx.array_equal(healed["layers.0.post_attention_layernorm.weight"], delta + 1.0).item()
     for k in ("pre_fc_norm_embedding.weight", "layers.0.input_layernorm.weight", "layers.0.self_attn.q_norm.weight", "fc.weight"):
         assert healed[k] is w[k]
+
+
+def test_load_sidecar_accepts_unprefixed_head_only_repo(tmp_path: Path) -> None:
+    """mlx-community/*-MTP-Nbit repos store the head's local tree without an mtp. prefix."""
+    args = _args()
+    src = Qwen35MtpHead(args)
+    weights = cast(dict[str, mx.array], dict(tree_flatten(src.parameters())))
+    path = tmp_path / "model.safetensors"
+    mx.save_safetensors(str(path), weights)  # pyright: ignore[reportUnknownMemberType]
+    loaded = load_sidecar(path)
+    assert set(loaded) == set(weights)
+    prefixed = tmp_path / "mtp.safetensors"
+    mx.save_safetensors(  # pyright: ignore[reportUnknownMemberType]
+        str(prefixed), {"language_model.mtp." + k: v for k, v in weights.items()}
+    )
+    assert set(load_sidecar(prefixed)) == set(weights)
