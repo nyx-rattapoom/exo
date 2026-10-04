@@ -27,3 +27,23 @@ if MTP_DRAFT_TOKENS < 0:
 
 def mtp_enabled() -> bool:
     return MTP_DRAFT_TOKENS > 0
+
+
+def resolve_mtp_settings(
+    card_draft_tokens: int | None, card_head_file: str | None
+) -> tuple[int, str | None]:
+    """Effective (draft_tokens, head_file) for one instance.
+
+    The card decides (``ModelCard.mtp``); a non-empty ``EXO_MTP_DRAFT`` in the
+    runner environment overrides it for trials, and ``EXO_MTP_DRAFT=0`` is the
+    kill switch that forces plain decode even for an MTP card. Read live so a
+    test can monkeypatch the environment.
+    """
+    env_raw = os.environ.get("EXO_MTP_DRAFT", "").strip()
+    env_head = os.environ.get("EXO_MTP_HEAD_FILE") or None
+    if env_raw != "":
+        draft = _int_env("EXO_MTP_DRAFT", 0)
+        return (draft, env_head or card_head_file) if draft > 0 else (0, None)
+    if card_draft_tokens is not None and card_draft_tokens > 0:
+        return card_draft_tokens, card_head_file
+    return 0, None

@@ -139,6 +139,19 @@ class VisionCardConfig(FrozenModel):
     processor_repo: str | None = None
 
 
+class MtpCardConfig(FrozenModel):
+    """Per-card native MTP speculative decoding (Qwen3.5/3.6 MoE heads).
+
+    ``draft_tokens`` is K, the number of drafted tokens per decode round;
+    ``head_file`` names the sidecar inside the weights directory (default: the
+    loader's known names, see ``mtp.head.SIDECAR_CANDIDATES``). ``EXO_MTP_DRAFT``
+    in the runner environment overrides this block for trials (``0`` = force off).
+    """
+
+    draft_tokens: PositiveInt = 1
+    head_file: str | None = None
+
+
 class SamplingValues(FrozenModel):
     temperature: float | None = None
     top_p: float | None = None
@@ -175,11 +188,20 @@ class ModelCard(FrozenModel):
     is_custom: bool = False
     vision: VisionCardConfig | None = None
     sampling_defaults: SamplingDefaults = Field(default_factory=SamplingDefaults)
+    # Serve another card's weights directory instead of downloading ``model_id``
+    # (e.g. a local MTP variant of a published checkpoint). Empty = the card's own id.
+    weights_repo: str = ""
+    # Native MTP speculative decoding for this card only; None = plain decode.
+    mtp: MtpCardConfig | None = None
+
+    def weights_model_id(self) -> ModelId:
+        """The id whose files this card loads (``weights_repo`` alias or ``model_id``)."""
+        return ModelId(self.weights_repo) if self.weights_repo else self.model_id
 
     @model_validator(mode="after")
     def _autodetect_vision(self) -> "ModelCard":
         if self.vision is None:
-            detected = detect_vision_from_config(self.model_id)
+            detected = detect_vision_from_config(self.weights_model_id())
             if detected is not None:
                 object.__setattr__(self, "vision", detected)
         return self
@@ -190,7 +212,9 @@ class ModelCard(FrozenModel):
             object.__setattr__(
                 self,
                 "vision",
-                self.vision.model_copy(update={"weights_repo": str(self.model_id)}),
+                self.vision.model_copy(
+                    update={"weights_repo": str(self.weights_model_id())}
+                ),
             )
         return self
 

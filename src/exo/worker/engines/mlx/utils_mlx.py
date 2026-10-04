@@ -171,7 +171,9 @@ def load_mlx_items(
 
     if group is None:
         logger.info(f"Single device used for {bound_instance.instance}")
-        model_path = build_model_path(bound_instance.bound_shard.model_card.model_id)
+        model_path = build_model_path(
+            bound_instance.bound_shard.model_card.weights_model_id()
+        )
         start_time = time.perf_counter()
         model, _ = load_model(model_path, lazy=True, strict=False)
         # Eval layers one by one for progress reporting
@@ -190,7 +192,13 @@ def load_mlx_items(
         end_time = time.perf_counter()
         logger.info(f"Time taken to load model: {(end_time - start_time):.2f}s")
         tokenizer = get_tokenizer(model_path, bound_instance.bound_shard)
-        maybe_attach_mtp(model, model_path, group=None, is_last_rank=True)
+        maybe_attach_mtp(
+            model,
+            model_path,
+            group=None,
+            is_last_rank=True,
+            card_mtp=bound_instance.bound_shard.model_card.mtp,
+        )
 
     else:
         logger.info("Starting distributed init")
@@ -214,7 +222,7 @@ def load_mlx_items(
         vision_start_time = time.perf_counter()
         try:
             vision_processor: VisionProcessor | None = VisionProcessor(
-                vision_config, bound_instance.bound_shard.model_card.model_id
+                vision_config, bound_instance.bound_shard.model_card.weights_model_id()
             )
             vision_processor.load()
             logger.info(
@@ -235,7 +243,7 @@ def shard_and_load(
     shard_metadata: ShardMetadata,
     group: mx.distributed.Group,
 ) -> Generator[ModelLoadingResponse, None, tuple[nn.Module, TokenizerWrapper]]:
-    model_path = build_model_path(shard_metadata.model_card.model_id)
+    model_path = build_model_path(shard_metadata.model_card.weights_model_id())
 
     model, _ = load_model(model_path, lazy=True, strict=False)
     logger.debug(model)
@@ -275,6 +283,7 @@ def shard_and_load(
                 model_path,
                 group=group,
                 is_last_rank=shard_metadata.device_rank == shard_metadata.world_size - 1,
+                card_mtp=shard_metadata.model_card.mtp,
             )
         case CfgShardMetadata():
             raise ValueError(
@@ -297,7 +306,7 @@ def shard_and_load(
 def get_tokenizer(model_path: Path, shard_metadata: ShardMetadata) -> TokenizerWrapper:
     """Load tokenizer for a model shard. Delegates to load_tokenizer_for_model_id."""
     return load_tokenizer_for_model_id(
-        shard_metadata.model_card.model_id,
+        shard_metadata.model_card.weights_model_id(),
         model_path,
         trust_remote_code=shard_metadata.model_card.trust_remote_code,
     )

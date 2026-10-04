@@ -4,6 +4,7 @@ from collections.abc import Generator
 from dataclasses import dataclass
 
 import mlx.core as mx
+import mlx.nn as nn
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 
 from exo.shared.types.common import ModelId
@@ -21,13 +22,19 @@ from exo.worker.runner.llm_inference.batch_generator import (
 from exo.worker.runner.llm_inference.tool_parsers import make_mlx_parser
 
 from .cache import KVPrefixCache
-from .mtp import mtp_enabled
+from .mtp.decode import get_runtime
 from .types import Model
 from .utils_mlx import (
     initialize_mlx,
     load_mlx_items,
 )
 from .vision import VisionProcessor
+
+
+def use_sequential_generator(model: nn.Module) -> bool:
+    """Batch size 1 when batching is disabled by env or when THIS instance's
+    model carries an attached MTP runtime (decided per card at load time)."""
+    return bool(os.environ.get("EXO_NO_BATCH")) or get_runtime(model) is not None
 
 
 @dataclass
@@ -84,10 +91,14 @@ class MlxBuilder(Builder):
         kv_prefix_cache = KVPrefixCache(self.group)
 
         device_rank = 0 if self.group is None else self.group.rank()
-        if os.environ.get("EXO_NO_BATCH") or mtp_enabled():
+        if use_sequential_generator(self.inference_model):
             logger.info(
                 "using SequentialGenerator "
-                + ("(MTP speculative decoding)" if mtp_enabled() else "(batching disabled)")
+                + (
+                    "(MTP speculative decoding)"
+                    if get_runtime(self.inference_model) is not None
+                    else "(batching disabled)"
+                )
             )
             return SequentialGenerator(
                 model=self.inference_model,

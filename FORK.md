@@ -78,7 +78,17 @@ The consequences:
   (`gdn_rollback.py`). Forces `SequentialGenerator` (batch size 1). Tokens are sampled from the trunk's
   own logits, so the output distribution is unchanged. Gated by `test_mtp_head.py` /
   `test_mtp_gdn_rollback.py`. Head: TensorFold's naive 4-bit g64 sidecar measured 0.883 K=1 acceptance
-  vs 0.886 for bf16 (2026-10-04).
+  vs 0.886 for bf16 (2026-10-04). **Per-card since 2026-10-05**: `ModelCard.mtp = {draft_tokens, head_file}`
+  turns MTP on for ONE card's instances (the runtime attaches to that instance's model; `builder.py` picks
+  `SequentialGenerator` only when a runtime is attached, so every other card keeps `BatchGenerator`), and
+  `ModelCard.weights_repo` lets such a card serve another card's weights directory without a second
+  download or any Hugging Face fetch for the alias id (`impl_shard_downloader.weights_shard` runs
+  download/status against the target repo and re-keys progress to the alias; `utils_mlx` loads/tokenises
+  from `weights_model_id()`). `EXO_MTP_DRAFT` still overrides per runner for trials; `EXO_MTP_DRAFT=0` is
+  the kill switch. Sidecar loader heals zero-centred RMSNorm gains per tensor (entries below −0.05) and
+  casts fp16 sidecars to bf16; handles numbered-expert, pre-stacked and unprefixed head-only layouts.
+  Cards with `mtp = None` and no `weights_repo` take the unchanged code path. Gated additionally by
+  `test_model_card_mtp_alias.py`, `test_weights_alias.py`, `test_mtp_per_card.py`.
 - **Discovery diagnostics** (`rust/networking/`, `c6d816b6`, `37a3138e`, `a1497c07`) — `AddrInUse` re-join
   keeps the interface, "no announce left the host" warns, `EXO_ZENOH_LOG` exposes zenoh logs. Inert unset.
 - **`.typings/mlx_lm/models/gated_delta.pyi`** — stale fused-kernel signature from the packed-GDN period
@@ -92,6 +102,7 @@ The consequences:
 | `internal-use-legacy` | the fused-GDN-kernel lineage, `d3db334b65e295ae014594bd60d12a78ea4af105`; pairs with mlx-lm `internal-use-legacy`. Kept as the rollback source, not developed |
 | `main` | mirror of the upstream fork point |
 | `fix/tool-call-truncation-not-error` | topic branch for `f609a765`; already cherry-picked onto `internal-use` |
+| `feat/mtp-pipeline` | reference: the native MTP speculative-decoding implementation as developed (2026-10-04/05); fast-forwarded into `internal-use` once the per-card version passed its gates. Kept, not rewritten |
 
 Anything else is new work or a keep-alive someone re-added. The matching mlx-lm fork has
 `internal-use`, `internal-use-legacy`, `leo/deepseek-v4` (the base upstream exo pins) and `main`.
