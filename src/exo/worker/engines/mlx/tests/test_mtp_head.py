@@ -131,16 +131,19 @@ def test_heal_delta_norms_shifts_only_zero_centred_gains() -> None:
     absolute = mx.array([0.9, 1.2, 1.8, 0.7])
     absolute_qk = mx.array([1.7, -0.008, 2.5, 1.9])  # tiny negative entry, mean well above 1
     delta = mx.array([-0.1, 0.2, 0.8, -0.3])  # unshifted (w - 1)
+    delta_final = mx.array([2.4, -0.17, 2.9, 2.6])  # Noctalin-style final norm: mean ~1.9 but zero-centred
     w = {
         "pre_fc_norm_embedding.weight": absolute_small,
         "layers.0.input_layernorm.weight": absolute,
         "layers.0.self_attn.q_norm.weight": absolute_qk,
         "layers.0.post_attention_layernorm.weight": delta,
+        "norm.weight": delta_final,
         "fc.weight": mx.zeros((4, 8)),
     }
     healed, shifted = heal_delta_norms(w)
-    assert shifted == ["layers.0.post_attention_layernorm.weight"]
+    assert sorted(shifted) == ["layers.0.post_attention_layernorm.weight", "norm.weight"]
     assert mx.array_equal(healed["layers.0.post_attention_layernorm.weight"], delta + 1.0).item()
+    assert mx.array_equal(healed["norm.weight"], delta_final + 1.0).item()
     for k in ("pre_fc_norm_embedding.weight", "layers.0.input_layernorm.weight", "layers.0.self_attn.q_norm.weight", "fc.weight"):
         assert healed[k] is w[k]
 
