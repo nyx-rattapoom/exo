@@ -215,13 +215,35 @@ def chunk_to_response(
     )
 
 
+def usage_chunk(command_id: CommandId, model: str, usage: Usage) -> str:
+    """The trailing ``choices: []`` event that ``stream_options.include_usage`` asks for.
+
+    OpenAI-compatible clients (LiteLLM among them) read usage only from this
+    event and ignore it on a content chunk, falling back to counting tokens
+    themselves -- which drops ``cached_tokens`` and miscounts the prompt.
+    """
+    response = ChatCompletionResponse(
+        id=command_id,
+        created=int(time.time()),
+        model=model,
+        choices=[],
+        usage=usage,
+    )
+    return f"data: {response.model_dump_json(exclude_none=True)}\n\n"
+
+
 async def generate_chat_stream(
     command_id: CommandId,
     chunk_stream: AsyncGenerator[
         PrefillProgressChunk | ErrorChunk | ToolCallChunk | TokenChunk, None
     ],
+    include_usage: bool = False,
 ) -> AsyncGenerator[str, None]:
-    """Generate Chat Completions API streaming events from chunks."""
+    """Generate Chat Completions API streaming events from chunks.
+
+    With ``include_usage`` the usage goes in its own trailing event, per the
+    OpenAI spec; without it, it stays on the finish chunk as before.
+    """
     last_usage: Usage | None = None
 
     async for chunk in chunk_stream:
@@ -267,9 +289,11 @@ async def generate_chat_stream(
                             finish_reason="tool_calls",
                         )
                     ],
-                    usage=last_usage,
+                    usage=None if include_usage else last_usage,
                 )
                 yield f"data: {tool_response.model_dump_json(exclude_none=True)}\n\n"
+                if include_usage and last_usage is not None:
+                    yield usage_chunk(command_id, chunk.model, last_usage)
                 if chunk.stats is not None:
                     yield f": generation_stats {chunk.stats.model_dump_json()}\n\n"
                 yield "data: [DONE]\n\n"
@@ -279,13 +303,15 @@ async def generate_chat_stream(
                 last_usage = chunk.usage or last_usage
 
                 chunk_response = chunk_to_response(chunk, command_id)
-                if chunk.finish_reason is not None:
+                if chunk.finish_reason is not None and not include_usage:
                     chunk_response = chunk_response.model_copy(
                         update={"usage": last_usage}
                     )
                 yield f"data: {chunk_response.model_dump_json(exclude_none=True)}\n\n"
 
                 if chunk.finish_reason is not None:
+                    if include_usage and last_usage is not None:
+                        yield usage_chunk(command_id, chunk.model, last_usage)
                     if chunk.stats is not None:
                         yield f": generation_stats {chunk.stats.model_dump_json()}\n\n"
                     yield "data: [DONE]\n\n"

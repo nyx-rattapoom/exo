@@ -929,6 +929,8 @@ class API:
                     generate_chat_stream(
                         command.command_id,
                         self._token_chunk_stream(command.command_id),
+                        include_usage=payload.stream_options is not None
+                        and payload.stream_options.include_usage,
                     ),
                 ),
                 media_type="text/event-stream",

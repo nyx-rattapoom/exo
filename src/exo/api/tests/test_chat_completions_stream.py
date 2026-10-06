@@ -193,3 +193,84 @@ class TestNonStreamingResponseShape:
         assert "function_call" not in message
         assert "name" not in message
         assert "tool_call_id" not in message
+
+
+class TestStreamUsageChunk:
+    """``stream_options.include_usage`` puts usage in a trailing ``choices: []`` event.
+
+    LiteLLM reads usage only from that event; usage left on the finish chunk is
+    ignored and replaced by LiteLLM's own token count, losing ``cached_tokens``.
+    """
+
+    @staticmethod
+    def _usage() -> Usage:
+        return Usage(
+            prompt_tokens=12044,
+            completion_tokens=2,
+            total_tokens=12046,
+            prompt_tokens_details=PromptTokensDetails(cached_tokens=12042),
+            completion_tokens_details=CompletionTokensDetails(),
+        )
+
+    def _token_chunks(
+        self,
+    ) -> list[PrefillProgressChunk | ErrorChunk | ToolCallChunk | TokenChunk]:
+        return [
+            TokenChunk(model=_TEST_MODEL, token_id=1, text="Hi", usage=None),
+            TokenChunk(
+                model=_TEST_MODEL,
+                token_id=2,
+                text="!",
+                usage=self._usage(),
+                finish_reason="stop",
+            ),
+        ]
+
+    async def _events(
+        self,
+        chunks: list[PrefillProgressChunk | ErrorChunk | ToolCallChunk | TokenChunk],
+        include_usage: bool,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        lines: list[str] = []
+        async for event in generate_chat_stream(
+            CommandId("test-cmd-usage"), _stream(chunks), include_usage=include_usage
+        ):
+            lines.append(event)
+        return _parse_data_events(lines), lines
+
+    async def test_include_usage_emits_trailing_usage_event(self):
+        events, lines = await self._events(self._token_chunks(), include_usage=True)
+
+        assert len(events) == 3
+        assert all("usage" not in e for e in events[:2])
+        assert events[1]["choices"][0]["finish_reason"] == "stop"
+        assert events[2]["choices"] == []
+        assert events[2]["usage"]["prompt_tokens"] == 12044
+        assert events[2]["usage"]["prompt_tokens_details"]["cached_tokens"] == 12042
+        assert lines[-1] == "data: [DONE]\n\n"
+
+    async def test_without_include_usage_usage_stays_on_finish_chunk(self):
+        events, _ = await self._events(self._token_chunks(), include_usage=False)
+
+        assert len(events) == 2
+        assert all(e["choices"] for e in events)
+        assert events[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 12042
+
+    async def test_include_usage_on_tool_call_stream(self):
+        chunks: list[PrefillProgressChunk | ErrorChunk | ToolCallChunk | TokenChunk] = [
+            ToolCallChunk(
+                model=_TEST_MODEL,
+                tool_calls=[
+                    ToolCallItem(id="call_1", name="get_weather", arguments="{}"),
+                ],
+                usage=self._usage(),
+            ),
+        ]
+        events, lines = await self._events(chunks, include_usage=True)
+
+        assert len(events) == 2
+        assert "usage" not in events[0]
+        assert events[0]["choices"][0]["finish_reason"] == "tool_calls"
+        assert events[1]["choices"] == []
+        assert events[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 12042
+        assert lines[-1] == "data: [DONE]\n\n"

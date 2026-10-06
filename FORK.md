@@ -57,6 +57,12 @@ The consequences:
 - **Tool calls keep the model's `finish_reason`** (`runner/llm_inference/model_output_parsers.py`,
   `f609a765`) — upstream relabels truncated/unparseable calls `"error"`, which becomes an empty HTTP 200.
   Extends upstream PR #2184 to the unparseable branch.
+- **Streamed usage in its own `choices: []` event** (`api/adapters/chat_completions.py`, `api/main.py`)
+  — with `stream_options.include_usage`, the finish chunk no longer carries `usage`; a trailing
+  `choices: []` event does, per the OpenAI spec. Upstream puts it on the finish chunk, which LiteLLM
+  ignores: it falls back to its own tokenizer, logs roughly half the real `prompt_tokens` and no
+  `cached_tokens`, so every streamed request read as a prompt-cache miss. Without `include_usage` the
+  stream is unchanged. Gated by `TestStreamUsageChunk` in `test_chat_completions_stream.py`.
 - **mlx-vlm ≥ 0.7.4 on darwin** (`pyproject.toml`, `uv.lock`; upstream locks 0.4.4) — 0.4.4's vision
   towers pass an `mx.array` as `repeats` to `mx.repeat`; the rltakashige mlx fork accepted that, stock
   mlx 0.32.2 raises `TypeError`, and `batch_generate.submit` catches it and silently serves the request
