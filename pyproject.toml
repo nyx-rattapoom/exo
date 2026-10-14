@@ -36,6 +36,7 @@ exo = "exo.main:main"
 [dependency-groups]
 dev = [
   "basedpyright>=1.29.0",
+  "httpx2>=2.13.1",
   "pyinstaller>=6.17.0",
   "playwright>=1.52.0",
   "pytest>=8.4.0",
@@ -48,9 +49,10 @@ dev = [
 build = ["nanobind"]
 mlx-none = ["anyio"]
 mlx = [
-  "mlx>=0.32.0",
+  "mlx==0.32.2",
   "mlx-lm",
-  "mlx-vlm>=0.3.11",
+  "mlx-vlm>=0.7.4; sys_platform == 'darwin'",
+  "mlx-vlm>=0.3.11; sys_platform != 'darwin'",
   "mflux==0.17.5",
   "torch==2.10.0; sys_platform == 'darwin'",
   "torch==2.10.0; sys_platform == 'linux'",
@@ -81,7 +83,6 @@ members = ["rust/exo_rs", "bench", "tools"]
 [tool.uv.sources]
 exo-rs = { workspace = true }
 mlx = [
-  { git = "https://github.com/ml-explore/mlx.git", rev = "0e3ff3643b1c3719f78814b98e0d222afbad867c", marker = "sys_platform == 'darwin'" },
   { url = "https://github.com/rltakashige/mlx-jaccl-fix-small-recv/releases/download/mlx_cuda/mlx-0.32.0-cp313-cp313-manylinux_2_35_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
   { url = "https://github.com/rltakashige/mlx-jaccl-fix-small-recv/releases/download/mlx_cuda/mlx-0.32.0-cp313-cp313-manylinux_2_35_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine != 'aarch64'" },
 ]
@@ -93,7 +94,7 @@ mlx-cuda-13 = [
   { url = "https://github.com/rltakashige/mlx-jaccl-fix-small-recv/releases/download/mlx_cuda/mlx_cuda_13-0.32.0-py3-none-manylinux_2_35_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
   { url = "https://github.com/rltakashige/mlx-jaccl-fix-small-recv/releases/download/mlx_cuda/mlx_cuda_13-0.32.0-py3-none-manylinux_2_35_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine != 'aarch64'" },
 ]
-mlx-lm = { git = "https://github.com/rltakashige/mlx-lm", branch = "leo/deepseek-v4" }
+mlx-lm = { git = "https://github.com/nyx-rattapoom/mlx-lm", branch = "internal-use" }
 mflux = { git = "https://github.com/evanev7/mflux", branch = "exo2" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform == 'linux' and extra == 'mlx-cpu' and extra != 'mlx-cuda13' and extra != 'mlx-cuda12'" },
