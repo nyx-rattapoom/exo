@@ -129,6 +129,41 @@ class TestParseToolCalls:
         assert isinstance(last, GenerationResponse)
         assert last.finish_reason == "stop"
 
+    def test_failed_parse_after_successful_call_still_emits_tool_calls(self):
+        """If an earlier tool call in the turn parsed and the last one does not, the
+        good calls are still emitted (as the terminal ToolCallResponse) and the bad one
+        comes back as text without a finish_reason of its own."""
+
+        def _picky_parser(text: str) -> dict[str, Any]:
+            if "good" not in text:
+                raise ValueError("parse failed")
+            return {"name": "test_fn", "arguments": {"arg": text.strip()}}
+
+        texts = [
+            "<tool_call>",
+            "good",
+            "</tool_call>",
+            "<tool_call>",
+            "bad",
+            "</tool_call>",
+        ]
+        results = list(
+            parse_tool_calls(
+                _make_responses(texts),
+                make_mlx_parser("<tool_call>", "</tool_call>", _picky_parser),
+                tools=None,
+            )
+        )
+
+        assert len(results) == 2
+        text_response, tool_response = results
+        assert isinstance(text_response, GenerationResponse)
+        assert text_response.text == "<tool_call>bad</tool_call>"
+        assert text_response.finish_reason is None
+        assert isinstance(tool_response, ToolCallResponse)
+        assert len(tool_response.tool_calls) == 1
+        assert tool_response.tool_calls[0].name == "test_fn"
+
     def test_unclosed_tool_call_at_the_end_yields_text(self):
         """Generation ending inside a tool call gives back what was written, not an error."""
         texts = ["<tool_call>", "test_fn", " unfinished"]

@@ -456,17 +456,31 @@ def parse_tool_calls(
             in_tool_call = False
             tool_call_text_parts = []
 
+            is_terminal = (
+                response.finish_reason is not None or response.stats is not None
+            )
             if parsed is None:
                 # What the model wrote isn't a tool call we can read: give it back as text, as
                 # other OpenAI-compatible servers do, rather than failing the request
                 logger.warning(f"tool call parsing failed for text {combined}")
-                yield response.model_copy(update={"text": combined, "token": 0})
-                continue
-
-            accumulated_tool_calls.extend(parsed)
-            if accumulated_tool_calls and (
-                response.finish_reason is not None or response.stats is not None
-            ):
+                if not (accumulated_tool_calls and is_terminal):
+                    yield response.model_copy(update={"text": combined, "token": 0})
+                    continue
+                # Earlier calls in this turn parsed: without this they would be dropped when
+                # the stream ends. The text goes out without the finish, and the
+                # ToolCallResponse below carries the finish, usage and stats.
+                yield response.model_copy(
+                    update={
+                        "text": combined,
+                        "token": 0,
+                        "finish_reason": None,
+                        "usage": None,
+                        "stats": None,
+                    }
+                )
+            else:
+                accumulated_tool_calls.extend(parsed)
+            if accumulated_tool_calls and is_terminal:
                 yield ToolCallResponse(
                     tool_calls=accumulated_tool_calls,
                     usage=response.usage,
