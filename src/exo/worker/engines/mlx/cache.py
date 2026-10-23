@@ -406,8 +406,15 @@ class KVPrefixCache:
                 if hasattr(c, "offset"):
                     c.offset = restore_pos
 
-        self._access_counter += 1
-        self._last_used[best_index] = self._access_counter
+        # Refresh recency only when this prompt continues the entry (the same
+        # conversation's next turn, or a re-ask). A hit that shares just a common
+        # prefix such as a system prompt is followed by a new entry of its own;
+        # refreshing here kept a stale entry most-recently-used, so concurrent
+        # sessions evicted each other instead of it. Prefill leaves out the last
+        # two prompt tokens, so a continuation hits two tokens short of the end.
+        if best_length >= len(self.prompts[best_index]) - 2:
+            self._access_counter += 1
+            self._last_used[best_index] = self._access_counter
         remaining = prompt_tokens[restore_pos:]
 
         return prompt_cache, remaining, best_index, is_exact
