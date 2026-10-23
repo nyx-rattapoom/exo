@@ -106,6 +106,13 @@ SHAs below are the rebased ones; the pre-rebase SHA follows in parentheses where
 - **Discovery diagnostics** (`rust/networking/`, `a97df660`, `a88d44bb` (`c6d816b6`, `a1497c07`)) —
   `AddrInUse` re-join keeps the interface (upstream's `discovery.rs` still drops it into `_ => {}`), and
   `EXO_ZENOH_LOG` exposes zenoh logs. Inert unset.
+- **Prefix-cache recency only for continuations** (`engines/mlx/cache.py` `get_kv_cache`,
+  `test_prefix_cache_recency.py`, `4a49c396`, 2026-10-24) — upstream marks the matched entry as used on
+  every lookup, even one that only shares a system prompt and then adds its own entry. A stale entry every
+  new session matches stays most-recently-used, so when the byte budget binds, two live sessions evict each
+  other every turn (measured: 86k vs 36k tokens prefilled, +81 % time to first token). Only a hit that
+  reaches the entry's end (minus the 2 tokens prefill leaves out) refreshes it now. The rule depends only on
+  tokens and entries, so every rank evicts the same entry. A no-op under our default memory threshold.
 
 ## Dropped on the 2026-10-14 rebase (upstream already fixed them)
 
@@ -160,13 +167,13 @@ real pass/fail (`0 errors` expected); `$?` after `nix build … | tail` is `tail
 
 ## Deployed state
 
-Stamped 2026-10-14. This section goes stale first; the cluster's operator notes are the
+Stamped 2026-10-24. This section goes stale first; the cluster's operator notes are the
 source of truth for anything operational.
 
 | | |
 |---|---|
-| Running closure | built from the **pre-rebase** head `14e2a298` (streamed-usage fix on the `21a54c5e` base), independently on both nodes to the same store path. The rebased head carrying this stamp is **not deployed** until it passes a trial. Store paths live in the operator notes, not here: this file is flake source, so naming a hash here would change it |
-| One-step rollback | `~/exo-prev` → the 2026-10-05 build from `ad48d3eb` (per-card MTP, without the streamed-usage fix). `~/exo-archive-*` roots hold the older builds |
+| Running closure | built from this branch's head (the prefix-cache recency fix over the 2026-10-14 rebase), independently on both nodes to the same store path. Store paths live in the operator notes, not here: this file is flake source, so naming a hash here would change it |
+| One-step rollback | `~/exo-rollback-jrr9jfs5` → the 2026-10-15 build from `8d5f5226` (the rebase, without the recency fix). `~/exo-rollback-*`, `~/exo-prev` and `~/exo-archive-*` roots hold the older builds |
 | Deploy step | re-point the `~/exo-current` GC root and restart the `exo` tmux session on both nodes; the supervisor resolves the binary through that symlink |
 
 ## Installing / building
